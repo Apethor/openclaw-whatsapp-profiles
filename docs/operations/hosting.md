@@ -30,6 +30,20 @@ npm run warmup
 npm run warmup:status
 ```
 
+To start the Windows stack automatically after your user logs in, install the scheduled task:
+
+```bash
+npm run service:install
+npm run service:status
+```
+
+This uses the same `start-chatbot.ps1` launcher in non-interactive mode and writes startup output to `data/runtime/start-chatbot.log`. To trigger it immediately or remove it:
+
+```bash
+npm run service:run
+npm run service:uninstall
+```
+
 Linux, Orange Pi, and VPS hosts can use the Linux warmup manager:
 
 ```bash

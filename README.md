@@ -113,6 +113,19 @@ npm run warmup:stop
 
 On Windows, after setup, you can also double-click `start-chatbot.bat` to run warmup and status.
 
+To start the same stack automatically when your Windows user logs in:
+
+```bash
+npm run service:install
+npm run service:status
+```
+
+You can also double-click `install-chatbot-service.bat`. The scheduled task runs `start-chatbot.ps1 -NoPause -LogToFile`, so startup output is written to `data/runtime/start-chatbot.log`. To remove only the startup task:
+
+```bash
+npm run service:uninstall
+```
+
 For 24/7 Linux hosting, first validate `warmup:linux`, then move the same services to `systemd` or another restart manager. See [Hosting](docs/operations/hosting.md).
 
 ## Policy Modes
