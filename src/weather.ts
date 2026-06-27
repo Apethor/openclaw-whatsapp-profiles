@@ -528,8 +528,10 @@ async function geocodeSingleLocation(query: string, originalQuery: string, confi
   }
 
   // The Open-Meteo geocoder fuzzy-matches anything to some place ("vai" ->
-  // "Vanimo"). Accept only when the result name actually relates to the query,
-  // so stray words from a locationless message are rejected.
+  // "Vanimo"). Accept when the result name relates to the query OR it is a large
+  // city (a confident match even when the localized name differs from the query,
+  // e.g. "moscow" -> "Moscovo", "tokyo" -> "Tóquio"). Stray words from a
+  // locationless message only match low-population places and are rejected.
   const queryNormalized = normalizeForIndex(query);
   const nameNormalized = normalizeForIndex(best.name ?? '');
   const nameRelatesToQuery =
@@ -537,7 +539,8 @@ async function geocodeSingleLocation(query: string, originalQuery: string, confi
     (queryNormalized.includes(nameNormalized) ||
       nameNormalized.includes(queryNormalized) ||
       queryNormalized.split(/\s+/u).some((word) => word.length > 3 && nameNormalized.includes(word)));
-  if (!nameRelatesToQuery) {
+  const isMajorCity = (best.population ?? 0) >= 100_000;
+  if (!nameRelatesToQuery && !isMajorCity) {
     return undefined;
   }
 
