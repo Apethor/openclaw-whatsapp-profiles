@@ -121,8 +121,12 @@ export async function transcribeVoiceMessage(
         };
       }
 
-      const data = (await response.json()) as { result?: { text?: unknown } };
-      const text = typeof data.result?.text === 'string' ? data.result.text.trim() : '';
+      // Most CF whisper variants nest the transcript under result.text, but some
+      // return it at the top level — accept either.
+      const data = (await response.json()) as { result?: { text?: unknown }; text?: unknown };
+      const rawText =
+        typeof data.result?.text === 'string' ? data.result.text : typeof data.text === 'string' ? data.text : '';
+      const text = rawText.trim();
       if (!text) {
         return { ok: false, reason: 'transcriber returned empty text' };
       }

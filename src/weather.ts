@@ -1,4 +1,5 @@
 import type { AppConfig } from './config.js';
+import type { Logger } from 'pino';
 
 type WeatherConfig = AppConfig['weather'];
 
@@ -723,6 +724,7 @@ export async function resolveWeatherPromptContext(input: {
   weather: WeatherConfig;
   now?: Date;
   force?: boolean;
+  logger?: Pick<Logger, 'warn'>;
 }): Promise<WeatherPromptContext | undefined> {
   if (!input.force && !isWeatherIntent(input.text)) {
     return undefined;
@@ -753,7 +755,10 @@ export async function resolveWeatherPromptContext(input: {
     // Geocoding or the Open-Meteo forecast call failed — log so an outage/timeout
     // is visible to the operator (the user still gets an honest "couldn't check").
     const reason = error instanceof Error ? error.message : String(error);
-    console.warn(`[weather] structured lookup failed (locationQuery="${input.locationQuery ?? ''}"): ${reason}`);
+    input.logger?.warn(
+      { locationQuery: input.locationQuery, reason },
+      'weather structured lookup failed'
+    );
     return buildUnavailablePrompt('falha ao consultar a API meteorologica estruturada', input.weather, fetchedAt);
   }
 }

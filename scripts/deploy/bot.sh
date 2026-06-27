@@ -40,13 +40,19 @@ DATA_DIR="${DATA_DIR:-/home/$OCI_VM_USER/wa-data}"
 
 # Recreate the container (defined once so mounts/flags never drift across the
 # restart/update/set-env commands). Both volumes matter: /data for policy+media,
-# /root/.openclaw for the WhatsApp session + plugins. After starting, verify it is
-# actually Running so a failed `docker run` surfaces (the old one is already gone)
-# instead of silently leaving the bot down.
-RECREATE="sudo docker rm -f '$CONTAINER_NAME' >/dev/null 2>&1; \
+# /root/.openclaw for the WhatsApp session + plugins.
+#   - `docker rm -f ... || true`: removal is best-effort. Without `|| true` it
+#     fails under `set -e` when the container is absent (first stand-up / manual
+#     rm) and `docker run` would never execute.
+#   - after starting, wait past the entrypoint's (now-fatal) plugin setup and
+#     assert the container is still Running with RestartCount 0, so an entrypoint
+#     failure ~10s in is caught instead of reported as "started".
+RECREATE="sudo docker rm -f '$CONTAINER_NAME' >/dev/null 2>&1 || true; \
 sudo docker run -d --name '$CONTAINER_NAME' --restart unless-stopped --env-file .env.docker \
   -v '$DATA_DIR':/data -v '$DATA_DIR'/openclaw:/root/.openclaw '$CONTAINER_NAME' >/dev/null \
-&& sleep 2 && [ \"\$(sudo docker inspect -f '{{.State.Running}}' '$CONTAINER_NAME' 2>/dev/null)\" = true ]"
+&& sleep 10 \
+&& [ \"\$(sudo docker inspect -f '{{.State.Running}}' '$CONTAINER_NAME' 2>/dev/null)\" = true ] \
+&& [ \"\$(sudo docker inspect -f '{{.RestartCount}}' '$CONTAINER_NAME' 2>/dev/null)\" = 0 ]"
 
 SSH_OPTS=(-i "$OCI_SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20)
 
@@ -79,7 +85,7 @@ case "$cmd" in
   actions)
     SINCE="25m"
     [ "${1:-}" = "--since" ] && { SINCE="$2"; shift 2; }
-    remote "sudo docker logs --since '$SINCE' '$CONTAINER_NAME' 2>&1 | grep -E '\"msg\":\"(openclaw inbound message normalized|agent action plan unavailable|action planner failed|auto reply approved)\"' || true" \
+    remote "sudo docker logs --since '$SINCE' '$CONTAINER_NAME' 2>&1 | grep -E '\"msg\":\"(openclaw inbound message normalized|agent action plan unavailable|action planner failed|web search failed|auto reply approved)\"' || true" \
       | "$PY" -c "
 import sys, json
 for line in sys.stdin:
@@ -88,13 +94,15 @@ for line in sys.stdin:
     try: d = json.loads(line[i:].strip())
     except Exception: continue
     m = d.get('msg', '')
-    if 'unavailable' in m:
+    if 'unavailable' in m or 'planner failed' in m:
         print('PLANNER FAIL:', d.get('plannerError') or d.get('parseError') or '?')
+    elif 'web search failed' in m:
+        print('WEB SEARCH FAIL:', d.get('reason') or '?', '| query:', d.get('query') or '?')
     elif m == 'auto reply approved':
         print('  REPLY:', repr((d.get('reply') or '')[:200]))
     else:
-        print('NORMALIZED actions=%s weather=%s webSearch=%s model=%s'
-              % (d.get('plannedActions'), d.get('weatherStatus'), d.get('webSearchResults'), d.get('responderModel')))
+        print('NORMALIZED actions=%s weather=%s webSearch=%s webSearchFailed=%s model=%s'
+              % (d.get('plannedActions'), d.get('weatherStatus'), d.get('webSearchResults'), d.get('webSearchFailed'), d.get('responderModel')))
 "
     ;;
 

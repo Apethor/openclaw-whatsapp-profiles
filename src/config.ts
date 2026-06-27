@@ -171,7 +171,7 @@ export type AppConfig = {
     provider: 'off' | 'tavily';
     apiKey?: string;
     maxResults: number;
-    searchDepth: 'basic' | 'advanced' | 'fast' | 'ultra-fast';
+    searchDepth: 'basic' | 'advanced';
     timeoutMs: number;
   };
   media: {
@@ -450,9 +450,9 @@ export function loadConfig(): AppConfig {
       provider: webSearchProvider,
       apiKey: tavilyApiKey,
       maxResults: Number(process.env.WEB_SEARCH_MAX_RESULTS ?? '5'),
-      searchDepth: z
-        .enum(['basic', 'advanced', 'fast', 'ultra-fast'])
-        .parse(process.env.WEB_SEARCH_DEPTH ?? 'basic'),
+      // Tavily only accepts basic | advanced; coerce anything else (legacy
+      // 'fast'/'ultra-fast', typos) to 'basic' so the request can't 400.
+      searchDepth: process.env.WEB_SEARCH_DEPTH === 'advanced' ? 'advanced' : 'basic',
       timeoutMs: Number(process.env.WEB_SEARCH_TIMEOUT_MS ?? '15000')
     },
     media: {

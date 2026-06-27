@@ -8,7 +8,8 @@ import type { AppConfig } from './config.js';
 export type WebSearchResult =
   | { status: 'ok'; prompt: string; query: string; resultCount: number }
   | { status: 'failed'; query: string; reason: string }
-  | { status: 'empty'; query: string };
+  | { status: 'empty'; query: string }
+  | { status: 'skipped'; reason: 'disabled' | 'no_api_key' | 'empty_query' };
 
 type TavilyResult = { title?: string; url?: string; content?: string };
 type TavilyResponse = { answer?: string; results?: TavilyResult[] };
@@ -16,14 +17,17 @@ type TavilyResponse = { answer?: string; results?: TavilyResult[] };
 export async function resolveWebSearchPromptContext(input: {
   query: string;
   config: AppConfig['webSearch'];
-}): Promise<WebSearchResult | undefined> {
-  if (input.config.provider === 'off' || !input.config.apiKey) {
-    return undefined;
+}): Promise<WebSearchResult> {
+  if (input.config.provider === 'off') {
+    return { status: 'skipped', reason: 'disabled' };
+  }
+  if (!input.config.apiKey) {
+    return { status: 'skipped', reason: 'no_api_key' };
   }
 
   const query = input.query.trim();
   if (!query) {
-    return undefined;
+    return { status: 'skipped', reason: 'empty_query' };
   }
 
   const controller = new AbortController();

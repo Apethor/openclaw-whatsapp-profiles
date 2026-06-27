@@ -977,20 +977,20 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
     canSendMedia: canSendOpenClawMedia(payload)
   });
   const plannerFinishedAt = Date.now();
-  if (actionPlan.parseError) {
-    // actionPlan.failed = the planner call itself broke (provider outage / out of
-    // credits), silently disabling weather/web_search/image tools — log at error.
-    // A plain empty plan (model chose no tools) only logs at warn.
-    const logPlanner = actionPlan.failed ? logger.error.bind(logger) : logger.warn.bind(logger);
-    logPlanner(
+  // The planner call broke (provider outage / out of credits / unparseable),
+  // silently disabling weather/web_search/image tools. Log at error and tell the
+  // draft to be honest instead of fabricating tool-grade data.
+  const toolsUnavailable = actionPlan.status === 'failed';
+  if (actionPlan.status === 'failed') {
+    logger.error(
       {
         target: targetLabel,
         messageId: message.id,
-        plannerError: actionPlan.parseError,
-        plannerFailed: actionPlan.failed || undefined,
+        plannerReason: actionPlan.reason,
+        plannerError: actionPlan.detail,
         raw: logReplyContent ? actionPlan.raw : undefined
       },
-      actionPlan.failed ? 'action planner failed; tools disabled for this message' : 'agent action plan unavailable'
+      'action planner failed; tools disabled for this message'
     );
   }
 
@@ -1012,7 +1012,8 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
         locationQuery: weatherLocationQuery,
         metadata: message.raw.context?.metadata,
         weather: config.weather,
-        force: true
+        force: true,
+        logger
       })
     : undefined;
   const weatherFinishedAt = Date.now();
@@ -1025,14 +1026,28 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
           config: config.webSearch
         })
       : undefined;
-  if (searchResult?.status === 'failed') {
+  // 'empty' (searched, nothing useful) is logged + signaled like 'failed' so the
+  // model is honest instead of answering from memory.
+  if (searchResult && (searchResult.status === 'failed' || searchResult.status === 'empty')) {
     logger.warn(
-      { target: targetLabel, messageId: message.id, query: searchResult.query, reason: searchResult.reason },
+      {
+        target: targetLabel,
+        messageId: message.id,
+        webSearchStatus: searchResult.status,
+        query: searchResult.query,
+        reason: searchResult.status === 'failed' ? searchResult.reason : undefined
+      },
       'web search failed; replying without current data'
     );
   }
-  const searchContext = searchResult?.status === 'ok' ? searchResult.prompt : undefined;
-  const searchFailed = searchResult?.status === 'failed';
+  const webSearch =
+    searchResult?.status === 'ok'
+      ? ({ status: 'ok', prompt: searchResult.prompt } as const)
+      : searchResult?.status === 'failed'
+        ? ({ status: 'failed' } as const)
+        : searchResult?.status === 'empty'
+          ? ({ status: 'empty' } as const)
+          : undefined;
 
   logger.info(
     {
@@ -1041,7 +1056,7 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
       inputKind: message.inputKind,
       contextMessages: conversationContext.length,
       webSearchResults: searchResult?.status === 'ok' ? searchResult.resultCount : undefined,
-      webSearchFailed: searchFailed || undefined,
+      webSearchFailed: webSearch && webSearch.status !== 'ok' ? webSearch.status : undefined,
       textChars: message.text.length,
       plannerMs: plannerFinishedAt - plannerStartedAt,
       plannedActions: actionPlan.actions.map((action) => action.type),
@@ -1409,9 +1424,10 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
     responder: config.responder,
     conversationContext,
     weatherContext,
-    searchContext,
-    searchFailed,
-    imageReferences: availableImageReferences
+    webSearch,
+    toolsUnavailable,
+    imageReferences: availableImageReferences,
+    logger
   });
   const responderFinishedAt = Date.now();
 

@@ -4,6 +4,7 @@ import type { ImageReferenceInput } from './media-tools.js';
 import type { ConversationEntry } from './runtime-state.js';
 import { type ChatCompletionResponse, extractMessageContent } from './openai-content.js';
 import type { WeatherPromptContext } from './weather.js';
+import type { Logger } from 'pino';
 import { z } from 'zod';
 
 export type DraftInput = {
@@ -13,11 +14,18 @@ export type DraftInput = {
   responder: AppConfig['responder'];
   conversationContext?: ConversationEntry[];
   weatherContext?: WeatherPromptContext;
-  searchContext?: string;
-  // A web_search was planned (the answer needs current/external info) but the
-  // search failed — tell the model to say so instead of answering from memory.
-  searchFailed?: boolean;
+  // Outcome of a planned web_search. 'ok' carries the snippets; 'failed'/'empty'
+  // tell the model to be honest instead of answering from memory; omit when no
+  // search was planned/attempted. One field (vs separate context+flag) so an
+  // illegal "context present AND failed" state is unrepresentable.
+  webSearch?: { status: 'ok'; prompt: string } | { status: 'failed' } | { status: 'empty' };
+  // The action planner itself failed, so no tools could run — don't fabricate
+  // tool-grade data (weather/current info).
+  toolsUnavailable?: boolean;
   imageReferences?: ImageReferenceInput[];
+  // Structured logger so leaf failures (empty model content) surface in the same
+  // pino stream as the rest of the worker instead of a bare console.warn.
+  logger?: Pick<Logger, 'warn'>;
 };
 
 export type AgentAction =
@@ -28,14 +36,17 @@ export type AgentAction =
   | { type: 'web_search'; query?: string }
   | { type: 'reply_text'; text?: string };
 
+// actions is always present (empty on failure) so consumers can read it without
+// guarding; the status union replaces the old failed?+parseError? pair so a
+// failure can't be expressed without a reason, nor success with an error.
+// 'failed' (no usable plan) is distinct from a legitimate { status:'ok', actions:[] }.
 export type AgentActionPlan = {
   actions: AgentAction[];
   raw?: string;
-  parseError?: string;
-  // true when the planner call itself failed (provider outage, non-200, parse/
-  // network error) — distinct from a model that legitimately planned no actions.
-  failed?: boolean;
-};
+} & (
+  | { status: 'ok' }
+  | { status: 'failed'; reason: 'provider_error' | 'parse_error' | 'network_error'; detail: string }
+);
 
 export type ActionPlanInput = DraftInput & {
   canSendMedia: boolean;
@@ -302,27 +313,32 @@ export async function generateActionPlan(input: ActionPlanInput): Promise<AgentA
 
     if (!response.ok) {
       const details = (await response.text().catch(() => '')).slice(0, 500);
-      // failed=true marks a provider outage (e.g. Cloudflare down / out of credits)
-      // as distinct from a model that legitimately chose no tools (actions: []).
-      return { actions: [], failed: true, parseError: `planner failed (${response.status}): ${details}` };
+      return {
+        status: 'failed',
+        reason: 'provider_error',
+        detail: `planner HTTP ${response.status}${details ? `: ${details}` : ''}`,
+        actions: []
+      };
     }
 
     const data = (await response.json()) as ChatCompletionResponse;
     const raw = extractMessageContent(data.choices?.[0]?.message, { objectAsJson: true }).trim();
     const parsed = rawActionPlanSchema.safeParse(JSON.parse(extractJsonObject(raw)));
     if (!parsed.success) {
-      return { actions: [], failed: true, raw, parseError: parsed.error.message };
+      return { status: 'failed', reason: 'parse_error', detail: parsed.error.message, actions: [], raw };
     }
 
     return {
+      status: 'ok',
       actions: normalizeActionPlan(parsed.data, guidance),
       raw
     };
   } catch (error) {
     return {
-      actions: [],
-      failed: true,
-      parseError: error instanceof Error ? error.message : String(error)
+      status: 'failed',
+      reason: 'network_error',
+      detail: error instanceof Error ? error.message : String(error),
+      actions: []
     };
   } finally {
     clearTimeout(timeout);
@@ -351,24 +367,33 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
     : 'Nao prometa enviar audio. Se pedirem resposta em audio, responda em texto curto dizendo que esse perfil nao manda audio dali.';
   const imageOcrInstruction =
     'Quando a mensagem atual vier de OCR/visao de imagem e trouxer pedido, pergunta ou prompt escrito, trate esse texto como a solicitacao principal do usuario. Cumpra diretamente em vez de apenas resumir/descrever a imagem. Preserve restricoes explicitas de formato, como numero de linhas, quebras de linha, lista, tabela ou tamanho, desde que caiba no limite do perfil.';
-  const toolInstruction = [
-    input.searchFailed
-      ? 'Era necessario buscar informacao atual na web, mas a busca FALHOU agora. Diga de forma curta e honesta que nao conseguiu consultar a informacao atualizada neste momento. NAO responda de memoria nem invente dados, numeros, datas ou fontes.'
-      : input.searchContext
+  const webSearch = input.webSearch;
+  const searchInstruction = input.toolsUnavailable
+    ? 'Nao foi possivel acionar ferramentas agora (servico indisponivel). Se a pergunta exige dado atual ou externo, diga de forma curta e honesta que nao conseguiu acessar isso agora. NAO invente dados, numeros, datas nem fontes.'
+    : webSearch?.status === 'ok'
       ? 'Resultados de busca na web foram fornecidos no contexto. Use-os como fonte para a informacao atual pedida e cite a origem de forma natural quando fizer sentido. Nao invente dados fora desses resultados.'
-      : guidance.profile.tools.webSearch
-        ? 'Web search esta disponivel nesta chamada. Use quando a mensagem exigir informacao atual, agenda, clima, noticias, precos, fontes externas ou validacao externa. Nao diga que pesquisou se nao tiver usado web search.'
-        : 'Nao use web search nem afirme que pesquisou na internet. Se faltarem dados atuais, diga isso de forma natural.',
+      : webSearch?.status === 'failed'
+        ? 'Era necessario buscar informacao atual na web, mas a busca FALHOU agora. Diga de forma curta e honesta que nao conseguiu consultar a informacao atualizada neste momento. NAO responda de memoria nem invente dados, numeros, datas ou fontes.'
+        : webSearch?.status === 'empty'
+          ? 'A busca na web foi feita mas NAO retornou resultados uteis. Diga de forma curta que nao encontrou a informacao; NAO invente dados, numeros, datas nem fontes.'
+          : guidance.profile.tools.webSearch
+            ? 'Web search esta disponivel nesta chamada. Use quando a mensagem exigir informacao atual, agenda, clima, noticias, precos, fontes externas ou validacao externa. Nao diga que pesquisou se nao tiver usado web search.'
+            : 'Nao use web search nem afirme que pesquisou na internet. Se faltarem dados atuais, diga isso de forma natural.';
+  const weatherInstruction = !guidance.profile.tools.weather
+    ? 'Nao consulte previsao do tempo nem afirme ter dados meteorologicos atualizados.'
+    : input.toolsUnavailable
+      ? 'Nao foi possivel consultar o clima agora. Se pedirem previsao, diga de forma curta que nao conseguiu acessar e nao invente dados.'
+      : input.weatherContext && input.weatherContext.status !== 'available'
+        ? 'Pediram clima mas NAO ha previsao confiavel agora (falta localizacao ou a consulta falhou). Peca a cidade/bairro de forma curta. NAO invente previsao: nao cite datas, temperaturas, chance de chuva nem fontes como se tivesse dados.'
+        : 'Quando houver contexto meteorologico estruturado, use esses dados como fonte de clima/previsao e inclua fonte, horario/base e confianca de forma curta. Nao troque por web search textual para clima.';
+  const toolInstruction = [
+    searchInstruction,
     guidance.profile.tools.localRead
       ? imageReferenceContext
         ? 'Leitura local esta disponivel nesta chamada. Use com criterio para inspecionar imagens recentes com caminho local quando a conversa depender delas, ou para pedidos envolvendo arquivos, pastas ou codigo local.'
         : 'Leitura local esta disponivel nesta chamada. Use com criterio quando o pedido envolver arquivos, pastas ou codigo local.'
       : 'Nao tente ler arquivos ou pastas locais. Se pedirem acesso a arquivos, diga que nao consegue acessar dali.',
-    guidance.profile.tools.weather
-      ? input.weatherContext && input.weatherContext.status !== 'available'
-        ? 'Pediram clima mas NAO ha previsao confiavel agora (falta localizacao ou a consulta falhou). Peca a cidade/bairro de forma curta. NAO invente previsao: nao cite datas, temperaturas, chance de chuva nem fontes como se tivesse dados.'
-        : 'Quando houver contexto meteorologico estruturado, use esses dados como fonte de clima/previsao e inclua fonte, horario/base e confianca de forma curta. Nao troque por web search textual para clima.'
-      : 'Nao consulte previsao do tempo nem afirme ter dados meteorologicos atualizados.'
+    weatherInstruction
   ].join(' ');
 
   const prompt = buildGuidancePrompt(
@@ -379,7 +404,7 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
     {
       weather: input.weatherContext?.prompt,
       imageReferences: imageReferenceContext,
-      webSearch: input.searchContext
+      webSearch: input.webSearch?.status === 'ok' ? input.webSearch.prompt : undefined
     }
   );
   const controller = new AbortController();
@@ -434,8 +459,9 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
       // auto-parsed object was dropped (see openai-content), or a provider outage.
       // Log it — otherwise the canned reply ships silently to every user.
       const messageKeys = Object.keys((data.choices?.[0]?.message ?? {}) as Record<string, unknown>);
-      console.warn(
-        `[responder] empty content from model ${input.responder.model}; message keys: ${messageKeys.join(',') || 'none'}`
+      input.logger?.warn(
+        { model: input.responder.model, messageKeys, remoteJid: input.remoteJid },
+        'responder returned empty content; sending canned fallback'
       );
       return 'Nao consegui formular uma resposta agora. Manda de novo em uma frase curta?';
     }

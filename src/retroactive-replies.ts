@@ -207,7 +207,8 @@ async function processRetroactiveTarget(
         locationQuery: thread.candidate.message.text,
         metadata: undefined,
         weather: config.weather,
-        now: new Date(thread.candidate.timeMs)
+        now: new Date(thread.candidate.timeMs),
+        logger
       })
     : undefined;
   const reply = await generateDraftReply({
@@ -216,7 +217,8 @@ async function processRetroactiveTarget(
     policy: config.policy,
     responder: config.responder,
     conversationContext,
-    weatherContext
+    weatherContext,
+    logger
   });
 
   const latestState = loadRuntimeState();
