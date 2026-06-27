@@ -20,7 +20,7 @@ import {
   saveRuntimeState,
   type ConversationEntry
 } from './runtime-state.js';
-import { buildWeatherLookupText, resolveWeatherPromptContext } from './weather.js';
+import { resolveWeatherPromptContext } from './weather.js';
 
 type RetroactiveLogger = Pick<Logger, 'debug' | 'info' | 'warn'>;
 
@@ -199,17 +199,15 @@ async function processRetroactiveTarget(
 
   const contextSettings = resolveConversationContext(target.id, config.policy);
   const conversationContext = historyContext(messages, thread.candidate, contextSettings);
-  const weatherLookupText = buildWeatherLookupText({
-    text: thread.candidate.message.text,
-    metadata: undefined,
-    conversationContext,
-    now: new Date(thread.candidate.timeMs)
-  });
+  // No planner in the retroactive path, so hand the raw message as the location
+  // query; the resolver cleans + geocodes it.
   const weatherContext = guidance.profile.tools.weather
     ? await resolveWeatherPromptContext({
-        text: weatherLookupText,
+        text: thread.candidate.message.text,
+        locationQuery: thread.candidate.message.text,
         metadata: undefined,
-        weather: config.weather
+        weather: config.weather,
+        now: new Date(thread.candidate.timeMs)
       })
     : undefined;
   const reply = await generateDraftReply({

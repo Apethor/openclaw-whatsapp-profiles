@@ -289,7 +289,7 @@ function buildActionPlanPrompt(input: ActionPlanInput, guidance: ResolvedGuidanc
     '',
     'Regras:',
     '- Use actions=[] para conversa normal sem ferramenta especial.',
-    '- Use get_weather quando a pessoa pedir clima, tempo ou previsao; query pode ser a cidade/data citada ou a propria mensagem.',
+    '- Use get_weather quando a pessoa pedir clima, tempo ou previsao. Em query coloque APENAS a localizacao citada, ja limpa e pesquisavel num geocoder (ex.: "Sao Paulo", "Tokyo", "Rio Pequeno, Sao Paulo"). Deixe query vazio se a pessoa nao disse o local.',
     '- Use web_search quando a resposta exigir informacao atual ou externa que voce nao tem com certeza (noticias, precos, cotacoes, resultados, agenda, fatos recentes); query deve ser uma busca curta e objetiva. Nao use para conversa casual nem para clima (use get_weather).',
     '- Use generate_image quando a pessoa pedir para criar, gerar, transformar ou enviar uma imagem nova.',
     '- Use generate_sticker quando a pessoa pedir figurinha/sticker/adesivo de WhatsApp.',

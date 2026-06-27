@@ -152,87 +152,6 @@ function isWeatherIntent(text: string): boolean {
   ].some((pattern) => pattern.test(normalized));
 }
 
-function isShortLocationLikeText(text: string): boolean {
-  const raw = text.trim();
-  const normalized = normalizeText(raw);
-  if (!normalized || raw.length > 100 || raw.includes('?')) {
-    return false;
-  }
-
-  const words = normalized.split(/\s+/u).filter(Boolean);
-  if (words.length > 10) {
-    return false;
-  }
-
-  if (
-    /\b(sim|nao|ok|blz|beleza|valeu|obrigado|obrigada|cancela|esquece|deixa|precisa|tenta|manda|responde)\b/u.test(
-      normalized
-    )
-  ) {
-    return false;
-  }
-
-  return [
-    /\b\d{5}-?\d{3}\b/u,
-    /\b(cep|bairro|cidade|rua|avenida|av|alameda|travessa|estrada|rodovia|centro|zona)\b/u,
-    /\b(sao paulo|rio de janeiro|minas gerais|espirito santo|rio grande do sul|rio grande do norte|santa catarina|mato grosso|mato grosso do sul|distrito federal)\b/u,
-    /\b(ac|al|ap|am|ba|ce|df|es|go|ma|mt|ms|mg|pa|pb|pr|pe|pi|rj|rn|rs|ro|rr|sc|sp|se|to)\b/u
-  ].some((pattern) => pattern.test(normalized)) || (/[,/]/u.test(raw) && /\p{Letter}/u.test(raw));
-}
-
-function isWeatherLocationFollowup(input: { text: string; metadata?: Record<string, unknown> }): boolean {
-  return Boolean(
-    locationFromMetadata(input.metadata) ||
-      locationFromCoordinates(input.text) ||
-      isShortLocationLikeText(input.text)
-  );
-}
-
-function hasWeatherLocation(input: { text: string; metadata?: Record<string, unknown> }): boolean {
-  return Boolean(locationFromMetadata(input.metadata) || locationFromCoordinates(input.text) || extractLocationQuery(input.text));
-}
-
-export function buildWeatherLookupText(input: {
-  text: string;
-  metadata?: Record<string, unknown>;
-  conversationContext?: Array<{ role: 'inbound' | 'outbound'; text: string; createdAt: number }>;
-  now?: Date;
-  maxFollowUpAgeMs?: number;
-}): string {
-  const currentWeatherIntent = isWeatherIntent(input.text);
-  const nowMs = input.now?.getTime() ?? Date.now();
-  const maxAgeMs = input.maxFollowUpAgeMs ?? 15 * 60 * 1000;
-  const recentInbound = [...(input.conversationContext ?? [])]
-    .reverse()
-    .filter((entry) => entry.role === 'inbound' && nowMs - entry.createdAt <= maxAgeMs);
-
-  if (currentWeatherIntent) {
-    if (hasWeatherLocation(input)) {
-      return input.text;
-    }
-
-    const previousLocation = recentInbound.find((entry) => isWeatherLocationFollowup({ text: entry.text }));
-    if (!previousLocation) {
-      return input.text;
-    }
-
-    const locationText = previousLocation.text.trim() || 'localizacao compartilhada no WhatsApp';
-    return `${input.text}\nLocalizacao: em ${locationText}`;
-  }
-
-  if (!isWeatherLocationFollowup(input)) {
-    return input.text;
-  }
-
-  const previousWeatherRequest = recentInbound.find((entry) => isWeatherIntent(entry.text));
-  if (!previousWeatherRequest) {
-    return input.text;
-  }
-
-  const locationText = input.text.trim() || 'localizacao compartilhada no WhatsApp';
-  return `${previousWeatherRequest.text}\nLocalizacao: em ${locationText}`;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -367,23 +286,6 @@ function cleanupLocationQuery(value: string): string | undefined {
   }
 
   return LOCATION_ALIASES[normalizeText(cleaned)] ?? cleaned;
-}
-
-function extractLocationQuery(text: string): string | undefined {
-  const withoutCoordinates = text.replace(/-?\d{1,2}(?:\.\d+)?\s*[,;]\s*-?\d{1,3}(?:\.\d+)?/gu, ' ');
-  const direct = withoutCoordinates.match(/\b(?:em|no|na|nos|nas|para|pra|pro|pros|pras)\s+([^?\n]+)/iu);
-  const possessive = withoutCoordinates.match(/\b(?:de|do|da)\s+([^?\n]+)/iu);
-  const query = cleanupLocationQuery(direct?.[1] ?? possessive?.[1] ?? '');
-  if (query) {
-    return query;
-  }
-
-  // Fallback: the planner often emits the bare location with no preposition
-  // ("Dallas", "Rio Pequeno São Paulo"). Treat the whole cleaned text as the
-  // location — geocodeSingleLocation validates the result name, so filler that
-  // collapses to a stray word ("vai chover hoje?" -> "vai") is rejected instead
-  // of being fuzzy-matched to a random town.
-  return cleanupLocationQuery(withoutCoordinates);
 }
 
 function formatDateInTimeZone(date: Date, timeZone?: string): string {
@@ -566,26 +468,33 @@ async function geocodeLocation(query: string, config: WeatherConfig): Promise<We
 }
 
 async function resolveLocation(
+  locationQuery: string | undefined,
   text: string,
   metadata: Record<string, unknown> | undefined,
   config: WeatherConfig
 ): Promise<WeatherLocation | undefined> {
+  // WhatsApp shared location and explicit coordinates win over any text — they
+  // are unambiguous and need no geocoding.
   const metadataLocation = locationFromMetadata(metadata);
   if (metadataLocation) {
     return metadataLocation;
   }
 
-  const coordinateLocation = locationFromCoordinates(text);
+  const coordinateLocation =
+    locationFromCoordinates(text) ?? (locationQuery ? locationFromCoordinates(locationQuery) : undefined);
   if (coordinateLocation) {
     return coordinateLocation;
   }
 
-  const query = extractLocationQuery(text);
-  if (!query) {
+  // The natural-language location is extracted upstream by the planner LLM and
+  // arrives here already clean ("São Paulo", "Tokyo", "Rio Pequeno, São Paulo").
+  // We only geocode + validate it; no regex parsing of the raw message.
+  const cleaned = locationQuery ? cleanupLocationQuery(locationQuery) : undefined;
+  if (!cleaned) {
     return undefined;
   }
 
-  return geocodeLocation(query, config);
+  return geocodeLocation(cleaned, config);
 }
 
 function conditionLabel(code: number | undefined): string {
@@ -810,6 +719,9 @@ function buildUnavailablePrompt(reason: string, config: WeatherConfig, fetchedAt
 
 export async function resolveWeatherPromptContext(input: {
   text: string;
+  // Clean, geocodable location extracted by the planner ("São Paulo", "Tokyo").
+  // The date is still parsed from `text`.
+  locationQuery?: string;
   metadata?: Record<string, unknown>;
   weather: WeatherConfig;
   now?: Date;
@@ -833,7 +745,7 @@ export async function resolveWeatherPromptContext(input: {
   }
 
   try {
-    const location = await resolveLocation(input.text, input.metadata, input.weather);
+    const location = await resolveLocation(input.locationQuery, input.text, input.metadata, input.weather);
     if (!location) {
       return buildNeedsLocationPrompt(input.weather, fetchedAt);
     }

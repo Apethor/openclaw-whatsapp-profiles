@@ -38,7 +38,7 @@ import {
   saveRuntimeState
 } from './runtime-state.js';
 import { type InboundMedia, transcribeVoiceMessage } from './transcriber.js';
-import { buildWeatherLookupText, resolveWeatherPromptContext } from './weather.js';
+import { resolveWeatherPromptContext } from './weather.js';
 import { resolveWebSearchPromptContext } from './web-search.js';
 
 type InboundPayload = {
@@ -985,17 +985,14 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
   const stickerRequest = Boolean(stickerAction);
   const imageRequest = Boolean(imageAction);
   const imageReferences = mediaAction?.useRecentImages ? availableImageReferences : [];
-  const weatherLookupText = weatherAction
-    ? buildWeatherLookupText({
-        text: weatherAction.query ?? message.text,
-        metadata: message.raw.context?.metadata,
-        conversationContext
-      })
-    : message.text;
+  // The planner already extracted a clean, geocodable location into the action
+  // query; the resolver just geocodes it. Date words still come from the message.
+  const weatherLocationQuery = weatherAction?.query?.trim() || undefined;
   const weatherStartedAt = Date.now();
   const weatherContext = weatherAction && guidance.profile.tools.weather
     ? await resolveWeatherPromptContext({
-        text: weatherLookupText,
+        text: message.text,
+        locationQuery: weatherLocationQuery,
         metadata: message.raw.context?.metadata,
         weather: config.weather,
         force: true
@@ -1027,7 +1024,7 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
       imageReferenceCount: availableImageReferences.length,
       generationImageReferenceCount: imageReferences.length,
       imageUnderstandingProvider: message.inputKind === 'media' ? config.imageUnderstanding.provider : undefined,
-      weatherFollowup: weatherLookupText !== message.text,
+      weatherLocationQuery,
       weatherStatus: weatherContext?.status,
       weatherConfidence: weatherContext?.confidence,
       weatherLocation: weatherContext?.locationLabel
