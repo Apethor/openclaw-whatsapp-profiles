@@ -378,14 +378,19 @@ function extractLocationQuery(text: string): string | undefined {
     return query;
   }
 
+  // Fallback for the planner's get_weather query, which is often just the
+  // location with no preposition ("Rio Pequeno São Paulo"). Only treat the whole
+  // text as a location when it actually looks like one (city/state/CEP/etc.) or
+  // starts with a weather noun — otherwise geocoding would fuzzy-match filler
+  // ("vai chover hoje?") to a random town.
   const startsWithWeatherNoun = /^\s*(?:clima|tempo|previsao|weather|forecast)\b/iu.test(
     normalizeText(withoutCoordinates)
   );
-  if (!startsWithWeatherNoun) {
-    return undefined;
+  if (startsWithWeatherNoun || isShortLocationLikeText(withoutCoordinates)) {
+    return cleanupLocationQuery(withoutCoordinates);
   }
 
-  return cleanupLocationQuery(withoutCoordinates);
+  return undefined;
 }
 
 function formatDateInTimeZone(date: Date, timeZone?: string): string {
