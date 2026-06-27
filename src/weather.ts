@@ -478,13 +478,36 @@ function uniqueValues(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-function geocodeQueryCandidates(query: string): string[] {
-  const separatorCandidates = query
-    .split(/[\/,;]/u)
-    .map((part) => cleanupLocationQuery(part) ?? '')
-    .filter((part) => part.length > 2);
+const BR_STATE_SUFFIX = /\s+(ac|al|ap|am|ba|ce|df|es|go|ma|mt|ms|mg|pa|pb|pr|pe|pi|rj|rn|rs|ro|rr|sc|sp|se|to)$/iu;
 
-  return uniqueValues([query, ...separatorCandidates]);
+function geocodeQueryCandidates(query: string): string[] {
+  const candidates: string[] = [query];
+
+  // Explicit separators: "bairro, cidade" / "a / b".
+  for (const part of query.split(/[\/,;]/u)) {
+    const cleaned = cleanupLocationQuery(part);
+    if (cleaned && cleaned.length > 2) {
+      candidates.push(cleaned);
+    }
+  }
+
+  // Brazilians often append the state code ("sao paulo sp") or a neighborhood
+  // ("rio pequeno sao paulo sp"), which Open-Meteo can't geocode as one string.
+  // Strip a trailing UF, then fall back to the last word-groups (the city is
+  // usually at the end). geocodeLocation tries candidates in order and keeps the
+  // first that resolves, so more specific strings are attempted first.
+  const ufStripped = query.replace(BR_STATE_SUFFIX, '').trim();
+  if (ufStripped && ufStripped !== query && ufStripped.length > 2) {
+    candidates.push(ufStripped);
+  }
+  const words = ufStripped.split(/\s+/u).filter(Boolean);
+  for (const n of [3, 2, 1]) {
+    if (words.length > n) {
+      candidates.push(words.slice(-n).join(' '));
+    }
+  }
+
+  return uniqueValues(candidates.filter((candidate) => candidate.length > 1)).slice(0, 6);
 }
 
 async function geocodeSingleLocation(query: string, originalQuery: string, config: WeatherConfig): Promise<WeatherLocation | undefined> {

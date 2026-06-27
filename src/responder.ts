@@ -391,7 +391,9 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
         : 'Leitura local esta disponivel nesta chamada. Use com criterio quando o pedido envolver arquivos, pastas ou codigo local.'
       : 'Nao tente ler arquivos ou pastas locais. Se pedirem acesso a arquivos, diga que nao consegue acessar dali.',
     guidance.profile.tools.weather
-      ? 'Quando houver contexto meteorologico estruturado, use esses dados como fonte de clima/previsao e inclua fonte, horario/base e confianca de forma curta. Nao troque por web search textual para clima.'
+      ? input.weatherContext && input.weatherContext.status !== 'available'
+        ? 'Pediram clima mas NAO ha previsao confiavel agora (falta localizacao ou a consulta falhou). Peca a cidade/bairro de forma curta. NAO invente previsao: nao cite datas, temperaturas, chance de chuva nem fontes como se tivesse dados.'
+        : 'Quando houver contexto meteorologico estruturado, use esses dados como fonte de clima/previsao e inclua fonte, horario/base e confianca de forma curta. Nao troque por web search textual para clima.'
       : 'Nao consulte previsao do tempo nem afirme ter dados meteorologicos atualizados.'
   ].join(' ');
 
