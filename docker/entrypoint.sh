@@ -12,16 +12,24 @@ echo "[entrypoint] ensuring OpenClaw WhatsApp plugin..."
 if "$OPENCLAW" plugins inspect whatsapp 2>/dev/null | grep -q "Status: loaded"; then
   echo "[entrypoint] whatsapp plugin already installed"
 else
-  "$OPENCLAW" plugins install clawhub:@openclaw/whatsapp --pin --force \
-    || echo "[entrypoint] WARN whatsapp plugin install failed"
+  # Load-bearing: without it the bot can't receive WhatsApp messages at all, so
+  # a soft-fail here would start a dead container. Fail hard and let the restart
+  # policy retry instead of masking the outage.
+  "$OPENCLAW" plugins install clawhub:@openclaw/whatsapp --pin --force || {
+    echo "[entrypoint] FATAL whatsapp plugin install failed" >&2
+    exit 1
+  }
 fi
 
 echo "[entrypoint] patching sticker support..."
-npm run openclaw:patch-whatsapp-stickers || echo "[entrypoint] WARN sticker patch failed"
+npm run openclaw:patch-whatsapp-stickers || echo "[entrypoint] WARN sticker patch failed (stickers only)"
 
 echo "[entrypoint] installing local dispatch plugin..."
-"$OPENCLAW" plugins install ./openclaw-plugins/whatsapp-policy-dispatch --force \
-  || echo "[entrypoint] WARN dispatch plugin install failed"
+# Also load-bearing: dispatch routes inbound messages to the worker.
+"$OPENCLAW" plugins install ./openclaw-plugins/whatsapp-policy-dispatch --force || {
+  echo "[entrypoint] FATAL dispatch plugin install failed" >&2
+  exit 1
+}
 
 echo "[entrypoint] repairing OpenClaw config..."
 npm run openclaw:repair-config || echo "[entrypoint] WARN config repair failed"

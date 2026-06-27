@@ -189,13 +189,22 @@ function runFileWithTimeout(
     const child = spawn(command, args, { windowsHide: true });
     let stdout = '';
     let stderr = '';
-    let failedToStart = false;
     let timedOut = false;
+    let settled = false;
 
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill('SIGTERM');
     }, timeoutMs);
+
+    const settle = (status: number) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      resolve({ status, stdout, stderr });
+    };
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -205,20 +214,17 @@ function runFileWithTimeout(
     child.stderr.on('data', (chunk) => {
       stderr += chunk;
     });
+    // 'error' fires (without a following 'close') when the binary can't even be
+    // spawned, e.g. ffmpeg/python missing — resolve here or the caller hangs forever.
     child.on('error', (error: NodeJS.ErrnoException) => {
-      failedToStart = true;
-      stderr += error.message;
+      stderr += `${stderr ? '\n' : ''}${error.message}`;
+      settle(1);
     });
     child.on('close', (status) => {
-      clearTimeout(timeout);
       if (timedOut) {
         stderr += `${stderr ? '\n' : ''}command timed out after ${timeoutMs}ms`;
       }
-      resolve({
-        status: failedToStart || timedOut ? 1 : status ?? 1,
-        stdout,
-        stderr
-      });
+      settle(timedOut ? 1 : status ?? 1);
     });
   });
 }
@@ -423,9 +429,24 @@ async function generateCloudflareImageFile(input: {
     const contentType = response.headers.get('content-type') ?? '';
     let buffer: Buffer;
     if (contentType.includes('application/json')) {
-      const data = (await response.json()) as { success?: boolean; result?: { image?: string } };
+      const data = (await response.json()) as {
+        success?: boolean;
+        result?: { image?: string };
+        errors?: Array<{ code?: number; message?: string }>;
+      };
       if (!data.result?.image) {
-        return { ok: false, reason: 'cloudflare image generation returned no image data' };
+        // CF returns HTTP 200 with success:false + errors[] for quota/credit/content
+        // problems — surface that instead of a generic "no image" message.
+        const detail = (data.errors ?? [])
+          .map((entry) => entry.message)
+          .filter((message): message is string => Boolean(message))
+          .join('; ');
+        return {
+          ok: false,
+          reason: detail
+            ? `cloudflare image generation returned no image: ${detail}`
+            : 'cloudflare image generation returned no image data'
+        };
       }
       buffer = Buffer.from(data.result.image, 'base64');
     } else {

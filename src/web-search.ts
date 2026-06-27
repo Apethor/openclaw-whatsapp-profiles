@@ -1,13 +1,14 @@
 import type { AppConfig } from './config.js';
 
-export type WebSearchPromptContext = {
-  // Formatted snippets injected into the responder prompt as the source of
-  // truth for current/external info (Cloudflare chat models cannot browse, so
-  // the worker searches and feeds results in).
-  prompt: string;
-  query: string;
-  resultCount: number;
-};
+// 'ok' carries the snippets injected into the responder prompt as the source of
+// truth for current/external info (Cloudflare chat models cannot browse).
+// 'failed' is a distinct signal so the worker tells the model the search failed
+// instead of letting it answer from stale memory. 'empty' = reached Tavily, no
+// usable results. undefined = not attempted (disabled / no key / empty query).
+export type WebSearchResult =
+  | { status: 'ok'; prompt: string; query: string; resultCount: number }
+  | { status: 'failed'; query: string; reason: string }
+  | { status: 'empty'; query: string };
 
 type TavilyResult = { title?: string; url?: string; content?: string };
 type TavilyResponse = { answer?: string; results?: TavilyResult[] };
@@ -15,7 +16,7 @@ type TavilyResponse = { answer?: string; results?: TavilyResult[] };
 export async function resolveWebSearchPromptContext(input: {
   query: string;
   config: AppConfig['webSearch'];
-}): Promise<WebSearchPromptContext | undefined> {
+}): Promise<WebSearchResult | undefined> {
   if (input.config.provider === 'off' || !input.config.apiKey) {
     return undefined;
   }
@@ -45,8 +46,8 @@ export async function resolveWebSearchPromptContext(input: {
     });
 
     if (!response.ok) {
-      console.warn(`[web-search] tavily failed (${response.status}) for query: ${query.slice(0, 80)}`);
-      return undefined;
+      const body = (await response.text().catch(() => '')).slice(0, 200);
+      return { status: 'failed', query, reason: `tavily HTTP ${response.status}${body ? `: ${body}` : ''}` };
     }
 
     const data = (await response.json()) as TavilyResponse;
@@ -62,14 +63,13 @@ export async function resolveWebSearchPromptContext(input: {
     });
 
     if (!lines.length) {
-      return undefined;
+      return { status: 'empty', query };
     }
 
-    return { prompt: lines.join('\n\n'), query, resultCount: results.length };
+    return { status: 'ok', prompt: lines.join('\n\n'), query, resultCount: results.length };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[web-search] tavily request error for query "${query.slice(0, 80)}": ${message}`);
-    return undefined;
+    return { status: 'failed', query, reason: message };
   } finally {
     clearTimeout(timeout);
   }

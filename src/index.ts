@@ -411,6 +411,13 @@ async function resolveMessageFromSeed(
         config: config.imageUnderstanding
       });
 
+      if (!result.ok) {
+        logger.warn(
+          { remoteJid: seed.remoteJid, provider: config.imageUnderstanding.provider, reason: result.reason },
+          'image understanding failed; using text fallback'
+        );
+      }
+
       return {
         id: seed.id,
         remoteJid: seed.remoteJid,
@@ -467,6 +474,11 @@ async function resolveMessageFromSeed(
       media: seed.media
     };
   }
+
+  logger.warn(
+    { remoteJid: seed.remoteJid, provider: config.transcriber.provider, reason: result.reason },
+    'voice transcription failed; using text fallback'
+  );
 
   return {
     id: seed.id,
@@ -966,14 +978,19 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
   });
   const plannerFinishedAt = Date.now();
   if (actionPlan.parseError) {
-    logger.warn(
+    // actionPlan.failed = the planner call itself broke (provider outage / out of
+    // credits), silently disabling weather/web_search/image tools — log at error.
+    // A plain empty plan (model chose no tools) only logs at warn.
+    const logPlanner = actionPlan.failed ? logger.error.bind(logger) : logger.warn.bind(logger);
+    logPlanner(
       {
         target: targetLabel,
         messageId: message.id,
         plannerError: actionPlan.parseError,
+        plannerFailed: actionPlan.failed || undefined,
         raw: logReplyContent ? actionPlan.raw : undefined
       },
-      'agent action plan unavailable'
+      actionPlan.failed ? 'action planner failed; tools disabled for this message' : 'agent action plan unavailable'
     );
   }
 
@@ -1001,13 +1018,21 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
   const weatherFinishedAt = Date.now();
 
   const searchAction = firstPlannedAction(actionPlan.actions, 'web_search');
-  const searchContext =
+  const searchResult =
     searchAction && guidance.profile.tools.webSearch
       ? await resolveWebSearchPromptContext({
           query: searchAction.query ?? message.text,
           config: config.webSearch
         })
       : undefined;
+  if (searchResult?.status === 'failed') {
+    logger.warn(
+      { target: targetLabel, messageId: message.id, query: searchResult.query, reason: searchResult.reason },
+      'web search failed; replying without current data'
+    );
+  }
+  const searchContext = searchResult?.status === 'ok' ? searchResult.prompt : undefined;
+  const searchFailed = searchResult?.status === 'failed';
 
   logger.info(
     {
@@ -1015,7 +1040,8 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
       messageId: message.id,
       inputKind: message.inputKind,
       contextMessages: conversationContext.length,
-      webSearchResults: searchContext?.resultCount,
+      webSearchResults: searchResult?.status === 'ok' ? searchResult.resultCount : undefined,
+      webSearchFailed: searchFailed || undefined,
       textChars: message.text.length,
       plannerMs: plannerFinishedAt - plannerStartedAt,
       plannedActions: actionPlan.actions.map((action) => action.type),
@@ -1383,7 +1409,8 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
     responder: config.responder,
     conversationContext,
     weatherContext,
-    searchContext: searchContext?.prompt,
+    searchContext,
+    searchFailed,
     imageReferences: availableImageReferences
   });
   const responderFinishedAt = Date.now();

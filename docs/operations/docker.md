@@ -46,7 +46,9 @@ CLOUDFLARE_ACCOUNT_ID=...
 CLOUDFLARE_API_TOKEN=...
 TAVILY_API_KEY=...
 RESPONDER_PROVIDER=cloudflare
-RESPONDER_CLOUDFLARE_MODEL=@cf/openai/gpt-oss-120b
+# Instruct model, not a reasoning one: gpt-oss-120b answers in reasoning_content
+# (empty content -> canned fallback). llama-4-scout returns normal content.
+RESPONDER_CLOUDFLARE_MODEL=@cf/meta/llama-4-scout-17b-16e-instruct
 IMAGE_GENERATOR_PROVIDER=cloudflare
 IMAGE_GENERATOR_CLOUDFLARE_MODEL=@cf/black-forest-labs/flux-1-schnell
 TRANSCRIBER_PROVIDER=cloudflare

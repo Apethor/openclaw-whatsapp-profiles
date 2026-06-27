@@ -38,6 +38,16 @@ CONTAINER_NAME="${CONTAINER_NAME:-whatsapp-bot}"
 REMOTE_DIR="${REMOTE_DIR:-openclaw-whatsapp-profiles}"
 DATA_DIR="${DATA_DIR:-/home/$OCI_VM_USER/wa-data}"
 
+# Recreate the container (defined once so mounts/flags never drift across the
+# restart/update/set-env commands). Both volumes matter: /data for policy+media,
+# /root/.openclaw for the WhatsApp session + plugins. After starting, verify it is
+# actually Running so a failed `docker run` surfaces (the old one is already gone)
+# instead of silently leaving the bot down.
+RECREATE="sudo docker rm -f '$CONTAINER_NAME' >/dev/null 2>&1; \
+sudo docker run -d --name '$CONTAINER_NAME' --restart unless-stopped --env-file .env.docker \
+  -v '$DATA_DIR':/data -v '$DATA_DIR'/openclaw:/root/.openclaw '$CONTAINER_NAME' >/dev/null \
+&& sleep 2 && [ \"\$(sudo docker inspect -f '{{.State.Running}}' '$CONTAINER_NAME' 2>/dev/null)\" = true ]"
+
 SSH_OPTS=(-i "$OCI_SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20)
 
 remote() { ssh "${SSH_OPTS[@]}" "$OCI_VM_USER@$OCI_VM_HOST" "$@"; }
@@ -69,7 +79,7 @@ case "$cmd" in
   actions)
     SINCE="25m"
     [ "${1:-}" = "--since" ] && { SINCE="$2"; shift 2; }
-    remote "sudo docker logs --since '$SINCE' '$CONTAINER_NAME' 2>&1 | grep -E '\"msg\":\"(openclaw inbound message normalized|agent action plan unavailable|auto reply approved)\"'" \
+    remote "sudo docker logs --since '$SINCE' '$CONTAINER_NAME' 2>&1 | grep -E '\"msg\":\"(openclaw inbound message normalized|agent action plan unavailable|action planner failed|auto reply approved)\"' || true" \
       | "$PY" -c "
 import sys, json
 for line in sys.stdin:
@@ -91,17 +101,19 @@ for line in sys.stdin:
   status)
     echo "=== container ==="
     remote "sudo docker ps -a --filter name='$CONTAINER_NAME' --format '{{.Status}} (restarts: {{.RestartCount}})' 2>/dev/null; sudo docker inspect -f 'restarts={{.RestartCount}}' '$CONTAINER_NAME' 2>/dev/null || true"
+    echo "=== health ==="
+    remote "sudo docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}no healthcheck{{end}}' '$CONTAINER_NAME' 2>/dev/null || true"
     echo "=== WhatsApp channel ==="
-    remote "timeout 30 sudo docker exec '$CONTAINER_NAME' node_modules/.bin/openclaw channels status 2>&1 | grep -i whatsapp || echo '(channel status timed out)'"
+    remote "out=\$(timeout 30 sudo docker exec '$CONTAINER_NAME' node_modules/.bin/openclaw channels status 2>&1); rc=\$?; if [ \$rc -eq 124 ]; then echo '(channel status timed out)'; else echo \"\$out\" | grep -i whatsapp || echo '(no whatsapp channel line — disconnected or starting)'; fi"
     ;;
 
   restart)
-    remote "cd ~/$REMOTE_DIR && sudo docker rm -f '$CONTAINER_NAME' >/dev/null 2>&1; sudo docker run -d --name '$CONTAINER_NAME' --restart unless-stopped --env-file .env.docker -v '$DATA_DIR':/data -v '$DATA_DIR'/openclaw:/root/.openclaw '$CONTAINER_NAME' >/dev/null && echo 'restarted (session persists in the volume; no re-scan needed)'"
+    remote "set -e; cd ~/$REMOTE_DIR && $RECREATE && echo 'restarted (session persists in the volume; no re-scan needed)'"
     ;;
 
   update)
     echo "Pulling latest, rebuilding (slow on small VMs), then restarting..."
-    remote "set -e; cd ~/$REMOTE_DIR && git pull && echo 'building...' && sudo docker build -t '$CONTAINER_NAME' . && sudo docker rm -f '$CONTAINER_NAME' >/dev/null 2>&1; sudo docker run -d --name '$CONTAINER_NAME' --restart unless-stopped --env-file .env.docker -v '$DATA_DIR':/data -v '$DATA_DIR'/openclaw:/root/.openclaw '$CONTAINER_NAME' >/dev/null && echo 'deployed latest + restarted'"
+    remote "set -e; cd ~/$REMOTE_DIR && git pull && echo 'building...' && sudo docker build -t '$CONTAINER_NAME' . && $RECREATE && echo 'deployed latest + restarted'"
     ;;
 
   set-env)
@@ -113,7 +125,7 @@ for line in sys.stdin:
       SETS="$SETS sed -i '/^${key}=/d' .env.docker; echo '${key}=${val}' >> .env.docker;"
       echo "set $key=$val"
     done
-    remote "cd ~/$REMOTE_DIR && $SETS sudo docker rm -f '$CONTAINER_NAME' >/dev/null 2>&1; sudo docker run -d --name '$CONTAINER_NAME' --restart unless-stopped --env-file .env.docker -v '$DATA_DIR':/data -v '$DATA_DIR'/openclaw:/root/.openclaw '$CONTAINER_NAME' >/dev/null && echo 'applied + restarted'"
+    remote "set -e; cd ~/$REMOTE_DIR && $SETS $RECREATE && echo 'applied + restarted'"
     ;;
 
   exec)

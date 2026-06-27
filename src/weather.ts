@@ -16,7 +16,6 @@ type WeatherLocation = {
   longitude: number;
   label: string;
   source: LocationSource;
-  accuracy?: number;
   query?: string;
   candidateCount?: number;
 };
@@ -235,15 +234,13 @@ function locationFromMetadata(metadata: Record<string, unknown> | undefined): We
   const name = firstString(sources, ['LocationName', 'locationName', 'name']);
   const address = firstString(sources, ['LocationAddress', 'locationAddress', 'address']);
   const caption = firstString(sources, ['LocationCaption', 'locationCaption', 'caption']);
-  const accuracy = firstNumber(sources, ['LocationAccuracy', 'locationAccuracy', 'accuracy']);
   const label = [name, address, caption].find(Boolean) ?? `localizacao do WhatsApp ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
 
   return {
     latitude,
     longitude,
     label,
-    source: 'whatsapp_location',
-    accuracy
+    source: 'whatsapp_location'
   };
 }
 
@@ -752,7 +749,11 @@ export async function resolveWeatherPromptContext(input: {
 
     const forecast = await fetchForecast(location, requestedDate, input.weather);
     return buildForecastPrompt(location, requestedDate, forecast, input.weather, fetchedAt);
-  } catch {
+  } catch (error) {
+    // Geocoding or the Open-Meteo forecast call failed — log so an outage/timeout
+    // is visible to the operator (the user still gets an honest "couldn't check").
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[weather] structured lookup failed (locationQuery="${input.locationQuery ?? ''}"): ${reason}`);
     return buildUnavailablePrompt('falha ao consultar a API meteorologica estruturada', input.weather, fetchedAt);
   }
 }

@@ -2,6 +2,7 @@ import type { AppConfig, BotPolicy } from './config.js';
 import { buildGuidancePrompt, type ResolvedGuidance, resolveGuidance } from './guidance.js';
 import type { ImageReferenceInput } from './media-tools.js';
 import type { ConversationEntry } from './runtime-state.js';
+import { type ChatCompletionResponse, extractMessageContent } from './openai-content.js';
 import type { WeatherPromptContext } from './weather.js';
 import { z } from 'zod';
 
@@ -13,47 +14,11 @@ export type DraftInput = {
   conversationContext?: ConversationEntry[];
   weatherContext?: WeatherPromptContext;
   searchContext?: string;
+  // A web_search was planned (the answer needs current/external info) but the
+  // search failed — tell the model to say so instead of answering from memory.
+  searchFailed?: boolean;
   imageReferences?: ImageReferenceInput[];
 };
-
-type ChatCompletionResponse = {
-  choices?: Array<{
-    message?: {
-      content?: unknown;
-    };
-  }>;
-};
-
-// OpenAI-compatible endpoints differ: most return message.content as a string,
-// but some (e.g. Cloudflare Workers AI for certain models) return an array of
-// content parts. Flatten both shapes to text so parsing never throws.
-function extractMessageContent(message: { content?: unknown } | undefined): string {
-  const content = message?.content;
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === 'string') {
-          return part;
-        }
-        const text = (part as { text?: unknown })?.text;
-        return typeof text === 'string' ? text : '';
-      })
-      .join('');
-  }
-  // Cloudflare's OpenAI-compatible endpoint auto-parses a JSON answer into an
-  // object; re-serialize so the planner (which JSON.parses the text) still works.
-  if (content && typeof content === 'object') {
-    try {
-      return JSON.stringify(content);
-    } catch {
-      return '';
-    }
-  }
-  return '';
-}
 
 export type AgentAction =
   | { type: 'generate_image'; prompt?: string; useRecentImages: boolean }
@@ -67,6 +32,9 @@ export type AgentActionPlan = {
   actions: AgentAction[];
   raw?: string;
   parseError?: string;
+  // true when the planner call itself failed (provider outage, non-200, parse/
+  // network error) — distinct from a model that legitimately planned no actions.
+  failed?: boolean;
 };
 
 export type ActionPlanInput = DraftInput & {
@@ -285,7 +253,7 @@ function buildActionPlanPrompt(input: ActionPlanInput, guidance: ResolvedGuidanc
     `Mensagem atual: ${input.text || '[sem texto extraivel]'}`,
     '',
     'Formato exato:',
-    '{"actions":[{"type":"reply_text","text":"opcional"},{"type":"get_weather","query":"cidade/data opcional"},{"type":"web_search","query":"o que buscar na web"},{"type":"generate_image","prompt":"prompt visual opcional","useRecentImages":false},{"type":"generate_sticker","prompt":"prompt visual opcional","useRecentImages":false},{"type":"reply_audio","text":"opcional"}]}',
+    '{"actions":[{"type":"reply_text","text":"opcional"},{"type":"get_weather","query":"cidade opcional"},{"type":"web_search","query":"o que buscar na web"},{"type":"generate_image","prompt":"prompt visual opcional","useRecentImages":false},{"type":"generate_sticker","prompt":"prompt visual opcional","useRecentImages":false},{"type":"reply_audio","text":"opcional"}]}',
     '',
     'Regras:',
     '- Use actions=[] para conversa normal sem ferramenta especial.',
@@ -333,14 +301,17 @@ export async function generateActionPlan(input: ActionPlanInput): Promise<AgentA
     });
 
     if (!response.ok) {
-      return { actions: [], parseError: `planner failed (${response.status})` };
+      const details = (await response.text().catch(() => '')).slice(0, 500);
+      // failed=true marks a provider outage (e.g. Cloudflare down / out of credits)
+      // as distinct from a model that legitimately chose no tools (actions: []).
+      return { actions: [], failed: true, parseError: `planner failed (${response.status}): ${details}` };
     }
 
     const data = (await response.json()) as ChatCompletionResponse;
-    const raw = extractMessageContent(data.choices?.[0]?.message).trim();
+    const raw = extractMessageContent(data.choices?.[0]?.message, { objectAsJson: true }).trim();
     const parsed = rawActionPlanSchema.safeParse(JSON.parse(extractJsonObject(raw)));
     if (!parsed.success) {
-      return { actions: [], raw, parseError: parsed.error.message };
+      return { actions: [], failed: true, raw, parseError: parsed.error.message };
     }
 
     return {
@@ -350,6 +321,7 @@ export async function generateActionPlan(input: ActionPlanInput): Promise<AgentA
   } catch (error) {
     return {
       actions: [],
+      failed: true,
       parseError: error instanceof Error ? error.message : String(error)
     };
   } finally {
@@ -380,7 +352,9 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
   const imageOcrInstruction =
     'Quando a mensagem atual vier de OCR/visao de imagem e trouxer pedido, pergunta ou prompt escrito, trate esse texto como a solicitacao principal do usuario. Cumpra diretamente em vez de apenas resumir/descrever a imagem. Preserve restricoes explicitas de formato, como numero de linhas, quebras de linha, lista, tabela ou tamanho, desde que caiba no limite do perfil.';
   const toolInstruction = [
-    input.searchContext
+    input.searchFailed
+      ? 'Era necessario buscar informacao atual na web, mas a busca FALHOU agora. Diga de forma curta e honesta que nao conseguiu consultar a informacao atualizada neste momento. NAO responda de memoria nem invente dados, numeros, datas ou fontes.'
+      : input.searchContext
       ? 'Resultados de busca na web foram fornecidos no contexto. Use-os como fonte para a informacao atual pedida e cite a origem de forma natural quando fizer sentido. Nao invente dados fora desses resultados.'
       : guidance.profile.tools.webSearch
         ? 'Web search esta disponivel nesta chamada. Use quando a mensagem exigir informacao atual, agenda, clima, noticias, precos, fontes externas ou validacao externa. Nao diga que pesquisou se nao tiver usado web search.'
@@ -456,6 +430,13 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
     const data = (await response.json()) as ChatCompletionResponse;
     const content = extractMessageContent(data.choices?.[0]?.message).trim();
     if (!content) {
+      // Empty content means a reasoning model answered in reasoning_content, an
+      // auto-parsed object was dropped (see openai-content), or a provider outage.
+      // Log it — otherwise the canned reply ships silently to every user.
+      const messageKeys = Object.keys((data.choices?.[0]?.message ?? {}) as Record<string, unknown>);
+      console.warn(
+        `[responder] empty content from model ${input.responder.model}; message keys: ${messageKeys.join(',') || 'none'}`
+      );
       return 'Nao consegui formular uma resposta agora. Manda de novo em uma frase curta?';
     }
 

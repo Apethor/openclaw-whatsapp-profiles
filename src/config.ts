@@ -291,11 +291,17 @@ export function loadConfig(): AppConfig {
   const cloudflareRunBaseUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId ?? ''}/ai/run`;
   const responderProvider = process.env.RESPONDER_PROVIDER?.trim();
   // CF Whisper for voice transcription (not OpenAI-compatible; the worker posts
-  // base64 audio to ai/run). Opt-in via TRANSCRIBER_PROVIDER=cloudflare so an
-  // explicit TRANSCRIBER_BASE_URL (e.g. local Whisper) is never silently ignored.
+  // base64 audio to ai/run). Mirror the other AI providers and auto-select CF on
+  // the all-Cloudflare backend, but never when an explicit TRANSCRIBER_BASE_URL
+  // (e.g. local Whisper) is set — that would be silently ignored.
   const transcriberProvider = z
     .enum(['openai', 'cloudflare'])
-    .parse(process.env.TRANSCRIBER_PROVIDER ?? 'openai');
+    .parse(
+      process.env.TRANSCRIBER_PROVIDER ??
+        (responderProvider === 'cloudflare' && cloudflareConfigured && !process.env.TRANSCRIBER_BASE_URL
+          ? 'cloudflare'
+          : 'openai')
+    );
   // Voice replies (TTS). CF has no good pt-BR voice, so on the CF backend default
   // to local edge-tts invoked directly by the worker (no codex-proxy in the path).
   const speechProvider = z
@@ -368,9 +374,7 @@ export function loadConfig(): AppConfig {
     imageGeneratorProvider === 'cloudflare'
       ? {
           provider: 'cloudflare',
-          baseUrl:
-            process.env.IMAGE_GENERATOR_BASE_URL ??
-            `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId ?? ''}/ai/run`,
+          baseUrl: process.env.IMAGE_GENERATOR_BASE_URL ?? cloudflareRunBaseUrl,
           // CF uses its own bearer token; never fall back to IMAGE_GENERATOR_API_KEY
           // (an OpenAI key there would be sent as the CF Authorization header).
           apiKey: cloudflareApiToken,
@@ -407,7 +411,7 @@ export function loadConfig(): AppConfig {
       baseUrl:
         process.env.RESPONDER_BASE_URL ??
         (responderProvider === 'cloudflare'
-          ? `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId ?? ''}/ai/v1`
+          ? cloudflareOpenAiBaseUrl
           : claudeProxyEnabled
             ? claudeProxyBaseUrl
             : codexProxyEnabled

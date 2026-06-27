@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { AppConfig, GuidanceProfile } from './config.js';
 import { runCodex } from './codex-proxy/codex-runner.js';
 import { runClaude, type ClaudeImage } from './claude-proxy/claude-runner.js';
+import { type ChatCompletionResponse, extractMessageContent } from './openai-content.js';
 import type { InboundMedia } from './transcriber.js';
 
 export type ImageUnderstandingResult =
@@ -16,43 +17,6 @@ export type ImageUnderstandingResult =
       reason: string;
       error?: string;
     };
-
-type ChatCompletionResponse = {
-  choices?: Array<{
-    message?: {
-      content?: unknown;
-    };
-  }>;
-};
-
-// OpenAI-compatible endpoints differ on message.content: a string for most,
-// an array of parts for some, or an auto-parsed object on Cloudflare. Flatten
-// all shapes to text.
-function extractMessageContent(message: { content?: unknown } | undefined): string {
-  const content = message?.content;
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === 'string') {
-          return part;
-        }
-        const text = (part as { text?: unknown })?.text;
-        return typeof text === 'string' ? text : '';
-      })
-      .join('');
-  }
-  if (content && typeof content === 'object') {
-    try {
-      return JSON.stringify(content);
-    } catch {
-      return '';
-    }
-  }
-  return '';
-}
 
 const IMAGE_EXTENSIONS = /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i;
 
