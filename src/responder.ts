@@ -12,22 +12,55 @@ export type DraftInput = {
   responder: AppConfig['responder'];
   conversationContext?: ConversationEntry[];
   weatherContext?: WeatherPromptContext;
+  searchContext?: string;
   imageReferences?: ImageReferenceInput[];
 };
 
 type ChatCompletionResponse = {
   choices?: Array<{
     message?: {
-      content?: string;
+      content?: unknown;
     };
   }>;
 };
+
+// OpenAI-compatible endpoints differ: most return message.content as a string,
+// but some (e.g. Cloudflare Workers AI for certain models) return an array of
+// content parts. Flatten both shapes to text so parsing never throws.
+function extractMessageContent(message: { content?: unknown } | undefined): string {
+  const content = message?.content;
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') {
+          return part;
+        }
+        const text = (part as { text?: unknown })?.text;
+        return typeof text === 'string' ? text : '';
+      })
+      .join('');
+  }
+  // Cloudflare's OpenAI-compatible endpoint auto-parses a JSON answer into an
+  // object; re-serialize so the planner (which JSON.parses the text) still works.
+  if (content && typeof content === 'object') {
+    try {
+      return JSON.stringify(content);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
 
 export type AgentAction =
   | { type: 'generate_image'; prompt?: string; useRecentImages: boolean }
   | { type: 'generate_sticker'; prompt?: string; useRecentImages: boolean }
   | { type: 'reply_audio'; text?: string }
   | { type: 'get_weather'; query?: string }
+  | { type: 'web_search'; query?: string }
   | { type: 'reply_text'; text?: string };
 
 export type AgentActionPlan = {
@@ -41,7 +74,7 @@ export type ActionPlanInput = DraftInput & {
 };
 
 const rawActionSchema = z.object({
-  type: z.enum(['generate_image', 'generate_sticker', 'reply_audio', 'get_weather', 'reply_text']),
+  type: z.enum(['generate_image', 'generate_sticker', 'reply_audio', 'get_weather', 'web_search', 'reply_text']),
   prompt: z.string().nullish(),
   text: z.string().nullish(),
   query: z.string().nullish(),
@@ -187,6 +220,16 @@ function normalizeActionPlan(raw: z.infer<typeof rawActionPlanSchema>, guidance:
         };
       }
 
+      if (action.type === 'web_search') {
+        if (!guidance.profile.tools.webSearch) {
+          return undefined;
+        }
+        return {
+          type: action.type,
+          query: cleanOptionalText(action.query)
+        };
+      }
+
       return {
         type: action.type,
         text: cleanOptionalText(action.text)
@@ -212,6 +255,9 @@ function buildActionPlanPrompt(input: ActionPlanInput, guidance: ResolvedGuidanc
   const availableActions = [
     'reply_text: responder normalmente em texto',
     guidance.profile.tools.weather ? 'get_weather: consultar clima/previsao estruturada' : undefined,
+    guidance.profile.tools.webSearch
+      ? 'web_search: buscar informacao atual/externa na web (noticias, precos, cotacoes, fatos recentes, agenda)'
+      : undefined,
     guidance.profile.tools.imageGeneration && input.canSendMedia
       ? 'generate_image: gerar e enviar uma imagem'
       : undefined,
@@ -239,11 +285,12 @@ function buildActionPlanPrompt(input: ActionPlanInput, guidance: ResolvedGuidanc
     `Mensagem atual: ${input.text || '[sem texto extraivel]'}`,
     '',
     'Formato exato:',
-    '{"actions":[{"type":"reply_text","text":"opcional"},{"type":"get_weather","query":"cidade/data opcional"},{"type":"generate_image","prompt":"prompt visual opcional","useRecentImages":false},{"type":"generate_sticker","prompt":"prompt visual opcional","useRecentImages":false},{"type":"reply_audio","text":"opcional"}]}',
+    '{"actions":[{"type":"reply_text","text":"opcional"},{"type":"get_weather","query":"cidade/data opcional"},{"type":"web_search","query":"o que buscar na web"},{"type":"generate_image","prompt":"prompt visual opcional","useRecentImages":false},{"type":"generate_sticker","prompt":"prompt visual opcional","useRecentImages":false},{"type":"reply_audio","text":"opcional"}]}',
     '',
     'Regras:',
     '- Use actions=[] para conversa normal sem ferramenta especial.',
     '- Use get_weather quando a pessoa pedir clima, tempo ou previsao; query pode ser a cidade/data citada ou a propria mensagem.',
+    '- Use web_search quando a resposta exigir informacao atual ou externa que voce nao tem com certeza (noticias, precos, cotacoes, resultados, agenda, fatos recentes); query deve ser uma busca curta e objetiva. Nao use para conversa casual nem para clima (use get_weather).',
     '- Use generate_image quando a pessoa pedir para criar, gerar, transformar ou enviar uma imagem nova.',
     '- Use generate_sticker quando a pessoa pedir figurinha/sticker/adesivo de WhatsApp.',
     '- Em generate_image/generate_sticker, useRecentImages=true quando o pedido depender de imagens recentes da conversa.',
@@ -290,7 +337,7 @@ export async function generateActionPlan(input: ActionPlanInput): Promise<AgentA
     }
 
     const data = (await response.json()) as ChatCompletionResponse;
-    const raw = data.choices?.[0]?.message?.content?.trim() ?? '';
+    const raw = extractMessageContent(data.choices?.[0]?.message).trim();
     const parsed = rawActionPlanSchema.safeParse(JSON.parse(extractJsonObject(raw)));
     if (!parsed.success) {
       return { actions: [], raw, parseError: parsed.error.message };
@@ -333,9 +380,11 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
   const imageOcrInstruction =
     'Quando a mensagem atual vier de OCR/visao de imagem e trouxer pedido, pergunta ou prompt escrito, trate esse texto como a solicitacao principal do usuario. Cumpra diretamente em vez de apenas resumir/descrever a imagem. Preserve restricoes explicitas de formato, como numero de linhas, quebras de linha, lista, tabela ou tamanho, desde que caiba no limite do perfil.';
   const toolInstruction = [
-    guidance.profile.tools.webSearch
-      ? 'Web search esta disponivel nesta chamada. Use quando a mensagem exigir informacao atual, agenda, clima, noticias, precos, fontes externas ou validacao externa. Nao diga que pesquisou se nao tiver usado web search.'
-      : 'Nao use web search nem afirme que pesquisou na internet. Se faltarem dados atuais, diga isso de forma natural.',
+    input.searchContext
+      ? 'Resultados de busca na web foram fornecidos no contexto. Use-os como fonte para a informacao atual pedida e cite a origem de forma natural quando fizer sentido. Nao invente dados fora desses resultados.'
+      : guidance.profile.tools.webSearch
+        ? 'Web search esta disponivel nesta chamada. Use quando a mensagem exigir informacao atual, agenda, clima, noticias, precos, fontes externas ou validacao externa. Nao diga que pesquisou se nao tiver usado web search.'
+        : 'Nao use web search nem afirme que pesquisou na internet. Se faltarem dados atuais, diga isso de forma natural.',
     guidance.profile.tools.localRead
       ? imageReferenceContext
         ? 'Leitura local esta disponivel nesta chamada. Use com criterio para inspecionar imagens recentes com caminho local quando a conversa depender delas, ou para pedidos envolvendo arquivos, pastas ou codigo local.'
@@ -353,7 +402,8 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
     input.conversationContext ?? [],
     {
       weather: input.weatherContext?.prompt,
-      imageReferences: imageReferenceContext
+      imageReferences: imageReferenceContext,
+      webSearch: input.searchContext
     }
   );
   const controller = new AbortController();
@@ -378,6 +428,7 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
             content: [
               'Voce escreve respostas curtas para WhatsApp pessoal.',
               'Responda somente com o texto final da mensagem.',
+              'Escreva em texto puro de WhatsApp. Nao use markdown: nada de ** para negrito, # para titulo, marcadores de citacao como [1] ou caracteres especiais de formatacao. Para enfase use no maximo um asterisco simples *assim*.',
               'Nao explique o raciocinio. Nao use saudacao artificial.',
               identityInstruction,
               audioReplyInstruction,
@@ -401,7 +452,7 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
     }
 
     const data = (await response.json()) as ChatCompletionResponse;
-    const content = data.choices?.[0]?.message?.content?.trim();
+    const content = extractMessageContent(data.choices?.[0]?.message).trim();
     if (!content) {
       return 'Nao consegui formular uma resposta agora. Manda de novo em uma frase curta?';
     }

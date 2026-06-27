@@ -85,7 +85,7 @@ export function buildGuidancePrompt(
   text: string,
   policy: BotPolicy,
   conversationContext: Array<{ role: 'inbound' | 'outbound'; text: string }> = [],
-  structuredContext: { weather?: string; imageReferences?: string } = {}
+  structuredContext: { weather?: string; imageReferences?: string; webSearch?: string } = {}
 ): string {
   const guidance = resolveGuidance(remoteJid, policy);
   const label = guidance.target?.label ?? remoteJid;
@@ -116,6 +116,9 @@ export function buildGuidancePrompt(
     structuredContext.imageReferences
       ? `Contexto de imagens recentes nesta conversa:\n${structuredContext.imageReferences}`
       : 'Contexto de imagens recentes nesta conversa: [nenhum]',
+    structuredContext.webSearch
+      ? `Resultados de busca na web (use como fonte para informacao atual; cite a origem de forma natural; nao invente):\n${structuredContext.webSearch}`
+      : 'Resultados de busca na web: [nenhum]',
     history,
     `Mensagem: ${text || '[sem texto extraivel]'}`,
     `Instrucoes: ${instructions.join(' ')}`,

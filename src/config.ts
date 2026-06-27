@@ -167,6 +167,13 @@ export type AppConfig = {
     geocodingCountryCode?: string;
     timeoutMs: number;
   };
+  webSearch: {
+    provider: 'off' | 'tavily';
+    apiKey?: string;
+    maxResults: number;
+    searchDepth: 'basic' | 'advanced' | 'fast' | 'ultra-fast';
+    timeoutMs: number;
+  };
   media: {
     outputDir: string;
     ffmpegCommand?: string;
@@ -185,7 +192,7 @@ export type AppConfig = {
     timeoutMs: number;
   };
   imageUnderstanding: {
-    provider: 'off' | 'openai' | 'custom' | 'codex-cli' | 'claude-cli';
+    provider: 'off' | 'openai' | 'custom' | 'codex-cli' | 'claude-cli' | 'cloudflare';
     baseUrl: string;
     apiKey?: string;
     model: string;
@@ -200,12 +207,20 @@ export type AppConfig = {
     maxPromptChars: number;
   };
   speech: {
+    provider: 'openai' | 'local';
     baseUrl: string;
     apiKey?: string;
     model: string;
     voice: string;
     responseFormat: 'mp3' | 'opus' | 'aac' | 'flac' | 'wav' | 'pcm';
     timeoutMs: number;
+    engine: 'edge' | 'piper' | 'system';
+    ttsScript: string;
+    ttsPython: string;
+    ttsRate?: string;
+    ttsPitch?: string;
+    ttsVolume?: string;
+    ffmpegCommand?: string;
   };
   sticker: {
     size: number;
@@ -213,6 +228,7 @@ export type AppConfig = {
     timeoutMs: number;
   };
   transcriber: {
+    provider: 'openai' | 'cloudflare';
     baseUrl: string;
     apiKey?: string;
     model: string;
@@ -260,6 +276,36 @@ export function loadConfig(): AppConfig {
   const claudeProxyBaseUrl = `http://${claudeProxyHost}:${claudeProxyPort}/v1`;
   const claudeProxyModel = process.env.CLAUDE_PROXY_MODEL ?? 'sonnet';
   const claudeBinDefault = process.platform === 'win32' ? 'claude.exe' : 'claude';
+
+  // Cloudflare Workers AI can back chat (RESPONDER_PROVIDER=cloudflare), vision
+  // (image understanding) and image generation via one account. Detect creds once.
+  const cloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const cloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  const cloudflareConfigured = Boolean(
+    cloudflareAccountId &&
+      !cloudflareAccountId.startsWith('PUT-YOUR') &&
+      cloudflareApiToken &&
+      !cloudflareApiToken.startsWith('PUT-YOUR')
+  );
+  const cloudflareOpenAiBaseUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId ?? ''}/ai/v1`;
+  const cloudflareRunBaseUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId ?? ''}/ai/run`;
+  const responderProvider = process.env.RESPONDER_PROVIDER?.trim();
+  // CF Whisper for voice transcription (not OpenAI-compatible; the worker posts
+  // base64 audio to ai/run). Opt-in via TRANSCRIBER_PROVIDER=cloudflare so an
+  // explicit TRANSCRIBER_BASE_URL (e.g. local Whisper) is never silently ignored.
+  const transcriberProvider = z
+    .enum(['openai', 'cloudflare'])
+    .parse(process.env.TRANSCRIBER_PROVIDER ?? 'openai');
+  // Voice replies (TTS). CF has no good pt-BR voice, so on the CF backend default
+  // to local edge-tts invoked directly by the worker (no codex-proxy in the path).
+  const speechProvider = z
+    .enum(['openai', 'local'])
+    .parse(process.env.SPEECH_PROVIDER ?? (responderProvider === 'cloudflare' ? 'local' : 'openai'));
+  const ffmpegCommandResolved = resolveOptionalCommand(
+    process.env.MEDIA_FFMPEG_COMMAND ??
+      process.env.CODEX_PROXY_FFMPEG_COMMAND ??
+      process.env.WHISPER_LOCAL_FFMPEG_COMMAND
+  );
   const proxyTranscriberProvider = process.env.CODEX_PROXY_TRANSCRIBER_PROVIDER;
   const proxyMediaProvider = process.env.CODEX_PROXY_MEDIA_PROVIDER ?? 'off';
   const openAiApiKey = process.env.OPENAI_API_KEY;
@@ -272,14 +318,16 @@ export function loadConfig(): AppConfig {
       ? process.env.WHISPER_LOCAL_MODEL ?? 'base'
       : 'gpt-4o-mini-transcribe';
   const imageUnderstandingProvider = z
-    .enum(['off', 'openai', 'custom', 'codex-cli', 'claude-cli'])
+    .enum(['off', 'openai', 'custom', 'codex-cli', 'claude-cli', 'cloudflare'])
     .parse(
       process.env.IMAGE_UNDERSTANDING_PROVIDER ??
-        (claudeProxyEnabled
-          ? 'claude-cli'
-          : codexProxyEnabled && proxyMediaProvider === 'codex-cli'
-            ? 'codex-cli'
-            : 'openai')
+        (responderProvider === 'cloudflare' && cloudflareConfigured
+          ? 'cloudflare'
+          : claudeProxyEnabled
+            ? 'claude-cli'
+            : codexProxyEnabled && proxyMediaProvider === 'codex-cli'
+              ? 'codex-cli'
+              : 'openai')
     );
   const imageUnderstandingTimeoutMs = Number(
     process.env.IMAGE_UNDERSTANDING_TIMEOUT_MS ??
@@ -291,21 +339,22 @@ export function loadConfig(): AppConfig {
   );
   const weatherCountryCode = process.env.WEATHER_GEOCODING_COUNTRY_CODE?.trim().toUpperCase();
 
+  // Web search for the responder. CF chat models cannot browse, so the worker
+  // searches (Tavily) when the planner emits a web_search action and injects the
+  // snippets into the prompt. Auto-on when TAVILY_API_KEY is set.
+  const tavilyApiKey = process.env.TAVILY_API_KEY?.trim();
+  const webSearchConfigured = Boolean(tavilyApiKey && !tavilyApiKey.startsWith('PUT-YOUR'));
+  const webSearchProvider = z
+    .enum(['off', 'tavily'])
+    .parse(process.env.WEB_SEARCH_PROVIDER ?? (webSearchConfigured ? 'tavily' : 'off'));
+
   // Image generation: the claude CLI cannot generate images, so when the bot is
   // on the claude backend we generate via Cloudflare Workers AI (its own REST
   // API, not OpenAI-compatible). Auto-selected when Cloudflare creds are present
   // unless IMAGE_GENERATOR_PROVIDER overrides it.
-  const cloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
-  const cloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN?.trim();
-  const cloudflareImageConfigured = Boolean(
-    cloudflareAccountId &&
-      !cloudflareAccountId.startsWith('PUT-YOUR') &&
-      cloudflareApiToken &&
-      !cloudflareApiToken.startsWith('PUT-YOUR')
-  );
   const imageGeneratorProvider = z
     .enum(['openai', 'cloudflare'])
-    .parse(process.env.IMAGE_GENERATOR_PROVIDER ?? (cloudflareImageConfigured ? 'cloudflare' : 'openai'));
+    .parse(process.env.IMAGE_GENERATOR_PROVIDER ?? (cloudflareConfigured ? 'cloudflare' : 'openai'));
   const imageGeneratorSize = process.env.IMAGE_GENERATOR_SIZE ?? '1024x1024';
   const imageGeneratorQuality = process.env.IMAGE_GENERATOR_QUALITY ?? 'low';
   const imageGeneratorOutputFormat = z
@@ -354,25 +403,31 @@ export function loadConfig(): AppConfig {
     responder: {
       baseUrl:
         process.env.RESPONDER_BASE_URL ??
-        (claudeProxyEnabled
-          ? claudeProxyBaseUrl
-          : codexProxyEnabled
-            ? codexProxyBaseUrl
-            : 'https://api.openai.com/v1'),
+        (responderProvider === 'cloudflare'
+          ? `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId ?? ''}/ai/v1`
+          : claudeProxyEnabled
+            ? claudeProxyBaseUrl
+            : codexProxyEnabled
+              ? codexProxyBaseUrl
+              : 'https://api.openai.com/v1'),
       apiKey:
         process.env.RESPONDER_API_KEY ??
-        (claudeProxyEnabled
-          ? process.env.CLAUDE_PROXY_API_KEY
-          : codexProxyEnabled
-            ? process.env.CODEX_PROXY_API_KEY
-            : undefined),
+        (responderProvider === 'cloudflare'
+          ? cloudflareApiToken
+          : claudeProxyEnabled
+            ? process.env.CLAUDE_PROXY_API_KEY
+            : codexProxyEnabled
+              ? process.env.CODEX_PROXY_API_KEY
+              : undefined),
       model:
         process.env.RESPONDER_MODEL ??
-        (claudeProxyEnabled
-          ? claudeProxyModel
-          : codexProxyEnabled
-            ? process.env.CODEX_PROXY_MODEL ?? 'gpt-5.4'
-            : 'gpt-4o-mini'),
+        (responderProvider === 'cloudflare'
+          ? process.env.RESPONDER_CLOUDFLARE_MODEL ?? '@cf/meta/llama-4-scout-17b-16e-instruct'
+          : claudeProxyEnabled
+            ? claudeProxyModel
+            : codexProxyEnabled
+              ? process.env.CODEX_PROXY_MODEL ?? 'gpt-5.4'
+              : 'gpt-4o-mini'),
       timeoutMs: Number(process.env.RESPONDER_TIMEOUT_MS ?? '120000')
     },
     weather: {
@@ -384,13 +439,18 @@ export function loadConfig(): AppConfig {
       geocodingCountryCode: weatherCountryCode || undefined,
       timeoutMs: Number(process.env.WEATHER_TIMEOUT_MS ?? '8000')
     },
+    webSearch: {
+      provider: webSearchProvider,
+      apiKey: tavilyApiKey,
+      maxResults: Number(process.env.WEB_SEARCH_MAX_RESULTS ?? '5'),
+      searchDepth: z
+        .enum(['basic', 'advanced', 'fast', 'ultra-fast'])
+        .parse(process.env.WEB_SEARCH_DEPTH ?? 'basic'),
+      timeoutMs: Number(process.env.WEB_SEARCH_TIMEOUT_MS ?? '15000')
+    },
     media: {
       outputDir: path.resolve(process.env.MEDIA_OUTPUT_DIR ?? './data/generated-media'),
-      ffmpegCommand: resolveOptionalCommand(
-        process.env.MEDIA_FFMPEG_COMMAND ??
-          process.env.CODEX_PROXY_FFMPEG_COMMAND ??
-          process.env.WHISPER_LOCAL_FFMPEG_COMMAND
-      ),
+      ffmpegCommand: ffmpegCommandResolved,
       referenceMaxImages: Number(process.env.MEDIA_REFERENCE_MAX_IMAGES ?? '5'),
       referenceMaxAgeMinutes: Number(process.env.MEDIA_REFERENCE_MAX_AGE_MINUTES ?? '120'),
       referenceMaxImageBytes: Number(process.env.MEDIA_REFERENCE_MAX_IMAGE_BYTES ?? String(20 * 1024 * 1024))
@@ -398,9 +458,12 @@ export function loadConfig(): AppConfig {
     imageGenerator,
     imageUnderstanding: {
       provider: imageUnderstandingProvider,
-      baseUrl: process.env.IMAGE_UNDERSTANDING_BASE_URL ?? 'https://api.openai.com/v1',
+      baseUrl:
+        process.env.IMAGE_UNDERSTANDING_BASE_URL ??
+        (imageUnderstandingProvider === 'cloudflare' ? cloudflareOpenAiBaseUrl : 'https://api.openai.com/v1'),
       apiKey:
         process.env.IMAGE_UNDERSTANDING_API_KEY ??
+        (imageUnderstandingProvider === 'cloudflare' ? cloudflareApiToken : undefined) ??
         process.env.OPENAI_API_KEY ??
         (codexProxyEnabled ? undefined : process.env.RESPONDER_API_KEY),
       model:
@@ -409,7 +472,9 @@ export function loadConfig(): AppConfig {
           ? process.env.CODEX_PROXY_MEDIA_CODEX_MODEL ?? process.env.CODEX_PROXY_MODEL ?? 'gpt-5.4-mini'
           : imageUnderstandingProvider === 'claude-cli'
             ? claudeProxyModel
-            : 'gpt-4o-mini'),
+            : imageUnderstandingProvider === 'cloudflare'
+              ? process.env.IMAGE_UNDERSTANDING_CLOUDFLARE_MODEL ?? '@cf/mistralai/mistral-small-3.1-24b-instruct'
+              : 'gpt-4o-mini'),
       timeoutMs: imageUnderstandingTimeoutMs,
       maxImageBytes: Number(process.env.IMAGE_UNDERSTANDING_MAX_IMAGE_BYTES ?? String(10 * 1024 * 1024)),
       detail: z.enum(['auto', 'low', 'high']).parse(process.env.IMAGE_UNDERSTANDING_DETAIL ?? 'auto'),
@@ -428,12 +493,24 @@ export function loadConfig(): AppConfig {
       maxPromptChars: Number(process.env.IMAGE_UNDERSTANDING_MAX_PROMPT_CHARS ?? process.env.CLAUDE_PROXY_MAX_PROMPT_CHARS ?? process.env.CODEX_PROXY_MAX_PROMPT_CHARS ?? '20000')
     },
     speech: {
+      provider: speechProvider,
       baseUrl: process.env.SPEECH_BASE_URL ?? mediaBaseUrlDefault,
       apiKey: process.env.SPEECH_API_KEY ?? mediaApiKeyDefault,
       model: process.env.SPEECH_MODEL ?? 'gpt-4o-mini-tts',
-      voice: process.env.SPEECH_VOICE ?? 'alloy',
-      responseFormat: z.enum(['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm']).parse(process.env.SPEECH_RESPONSE_FORMAT ?? 'mp3'),
-      timeoutMs: Number(process.env.SPEECH_TIMEOUT_MS ?? '60000')
+      voice: process.env.SPEECH_VOICE ?? (speechProvider === 'local' ? 'pt-BR-FranciscaNeural' : 'alloy'),
+      responseFormat: z
+        .enum(['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'])
+        .parse(process.env.SPEECH_RESPONSE_FORMAT ?? (speechProvider === 'local' ? 'opus' : 'mp3')),
+      timeoutMs: Number(process.env.SPEECH_TIMEOUT_MS ?? '60000'),
+      engine: z
+        .enum(['edge', 'piper', 'system'])
+        .parse(process.env.SPEECH_LOCAL_ENGINE ?? process.env.CODEX_PROXY_LOCAL_SPEECH_ENGINE ?? 'edge'),
+      ttsScript: process.env.SPEECH_LOCAL_TTS_SCRIPT ?? process.env.CODEX_PROXY_LOCAL_TTS_SCRIPT ?? './scripts/local-tts.py',
+      ttsPython: process.env.SPEECH_LOCAL_TTS_PYTHON ?? process.env.CODEX_PROXY_LOCAL_TTS_PYTHON ?? 'python',
+      ttsRate: process.env.SPEECH_LOCAL_TTS_RATE ?? process.env.CODEX_PROXY_LOCAL_TTS_RATE,
+      ttsPitch: process.env.SPEECH_LOCAL_TTS_PITCH ?? process.env.CODEX_PROXY_LOCAL_TTS_PITCH,
+      ttsVolume: process.env.SPEECH_LOCAL_TTS_VOLUME ?? process.env.CODEX_PROXY_LOCAL_TTS_VOLUME,
+      ffmpegCommand: ffmpegCommandResolved
     },
     sticker: {
       size: Number(process.env.STICKER_SIZE ?? '512'),
@@ -441,13 +518,21 @@ export function loadConfig(): AppConfig {
       timeoutMs: Number(process.env.STICKER_TIMEOUT_MS ?? '60000')
     },
     transcriber: {
+      provider: transcriberProvider,
       baseUrl:
-        process.env.TRANSCRIBER_BASE_URL ??
-        (codexProxyEnabled ? codexProxyBaseUrl : 'https://api.openai.com/v1'),
+        transcriberProvider === 'cloudflare'
+          ? cloudflareRunBaseUrl
+          : process.env.TRANSCRIBER_BASE_URL ??
+            (codexProxyEnabled ? codexProxyBaseUrl : 'https://api.openai.com/v1'),
       apiKey:
-        process.env.TRANSCRIBER_API_KEY ??
-        (codexProxyEnabled ? process.env.CODEX_PROXY_API_KEY : process.env.RESPONDER_API_KEY),
-      model: process.env.TRANSCRIBER_MODEL ?? process.env.CODEX_PROXY_TRANSCRIBER_MODEL ?? defaultTranscriberModel,
+        transcriberProvider === 'cloudflare'
+          ? cloudflareApiToken
+          : process.env.TRANSCRIBER_API_KEY ??
+            (codexProxyEnabled ? process.env.CODEX_PROXY_API_KEY : process.env.RESPONDER_API_KEY),
+      model:
+        transcriberProvider === 'cloudflare'
+          ? process.env.TRANSCRIBER_CLOUDFLARE_MODEL ?? '@cf/openai/whisper-large-v3-turbo'
+          : process.env.TRANSCRIBER_MODEL ?? process.env.CODEX_PROXY_TRANSCRIBER_MODEL ?? defaultTranscriberModel,
       language: process.env.TRANSCRIBER_LANGUAGE,
       prompt: process.env.TRANSCRIBER_PROMPT,
       timeoutMs: Number(process.env.TRANSCRIBER_TIMEOUT_MS ?? '60000')

@@ -39,6 +39,7 @@ import {
 } from './runtime-state.js';
 import { type InboundMedia, transcribeVoiceMessage } from './transcriber.js';
 import { buildWeatherLookupText, resolveWeatherPromptContext } from './weather.js';
+import { resolveWebSearchPromptContext } from './web-search.js';
 
 type InboundPayload = {
   type?: string;
@@ -1002,12 +1003,22 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
     : undefined;
   const weatherFinishedAt = Date.now();
 
+  const searchAction = firstPlannedAction(actionPlan.actions, 'web_search');
+  const searchContext =
+    searchAction && guidance.profile.tools.webSearch
+      ? await resolveWebSearchPromptContext({
+          query: searchAction.query ?? message.text,
+          config: config.webSearch
+        })
+      : undefined;
+
   logger.info(
     {
       target: targetLabel,
       messageId: message.id,
       inputKind: message.inputKind,
       contextMessages: conversationContext.length,
+      webSearchResults: searchContext?.resultCount,
       textChars: message.text.length,
       plannerMs: plannerFinishedAt - plannerStartedAt,
       plannedActions: actionPlan.actions.map((action) => action.type),
@@ -1375,6 +1386,7 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
     responder: config.responder,
     conversationContext,
     weatherContext,
+    searchContext: searchContext?.prompt,
     imageReferences: availableImageReferences
   });
   const responderFinishedAt = Date.now();

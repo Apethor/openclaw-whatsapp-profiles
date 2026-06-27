@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AppConfig } from './config.js';
+import { synthesizeLocalSpeech } from './local-speech.js';
 
 type ImageGenerationResponse = {
   data?: Array<{
@@ -607,6 +608,17 @@ export async function synthesizeSpeechFile(input: {
   config: AppConfig['speech'];
   outputDir: string;
 }): Promise<MediaGenerationResult> {
+  // Local edge-tts path: rendered directly by the worker (no proxy), so it ships
+  // on Proxmox with just Python + edge-tts + ffmpeg.
+  if (input.config.provider === 'local') {
+    const result = await synthesizeLocalSpeech({
+      text: speechTextFromReply(input.text),
+      config: input.config,
+      outputDir: input.outputDir
+    });
+    return result.ok ? { ok: true, media: { path: result.path } } : { ok: false, reason: result.reason };
+  }
+
   if (!input.config.apiKey) {
     return { ok: false, reason: 'speech API key not configured' };
   }

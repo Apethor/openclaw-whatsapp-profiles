@@ -1,0 +1,117 @@
+# Docker / Cloud Deployment
+
+The bot is fully portable: all AI runs on Cloudflare Workers AI + Tavily over
+HTTP, and only voice replies use local `edge-tts` + `ffmpeg` (both baked into the
+image). That makes it shippable to any container host, including **Oracle Cloud
+Always Free** (ARM Ampere A1 — a genuinely free 24/7 VM).
+
+## What the image runs
+
+One container runs three processes under `supervisord`:
+
+- `gateway` — OpenClaw WhatsApp connection (linked device).
+- `control` — local send endpoint.
+- `worker` — the bot (inbound policy/profiles, calls Cloudflare/Tavily).
+
+`docker/entrypoint.sh` does the one-time OpenClaw plugin setup, then hands off to
+supervisord. Logs go to `docker logs`.
+
+## The `/data` volume (important)
+
+Mount a volume at `/data`. It holds:
+
+- `/data/baileys-auth/` — the WhatsApp linked-device session. **Without a
+  persistent volume you must re-scan the QR every time the container is
+  recreated.**
+- `/data/bot-policy.local.json` — your profiles/targets policy (gitignored, not
+  baked into the image — you provide it).
+
+The image sets `BOT_AUTH_DIR=/data/baileys-auth` and
+`BOT_POLICY_PATH=/data/bot-policy.local.json`.
+
+## Preparing `.env` for the container
+
+Start from your working `.env`, but **drop the Windows-specific lines** — the
+image already sets the Linux equivalents:
+
+- Remove `BOT_POLICY_PATH`, `BOT_AUTH_DIR` (image points them at `/data`).
+- Remove `MEDIA_FFMPEG_COMMAND` / `CODEX_PROXY_FFMPEG_COMMAND` Windows paths
+  (image uses `ffmpeg` on PATH).
+- Remove `SPEECH_LOCAL_TTS_PYTHON` Windows value (image uses `python3`).
+
+Keep the backend config (this is the whole point):
+
+```text
+CLOUDFLARE_ACCOUNT_ID=...
+CLOUDFLARE_API_TOKEN=...
+TAVILY_API_KEY=...
+RESPONDER_PROVIDER=cloudflare
+RESPONDER_CLOUDFLARE_MODEL=@cf/openai/gpt-oss-120b
+IMAGE_GENERATOR_PROVIDER=cloudflare
+IMAGE_GENERATOR_CLOUDFLARE_MODEL=@cf/black-forest-labs/flux-1-schnell
+TRANSCRIBER_PROVIDER=cloudflare
+SPEECH_PROVIDER=local
+CLAUDE_PROXY_ENABLED=false
+CODEX_PROXY_ENABLED=false
+WHISPER_LOCAL_ENABLED=false
+BOT_MODE=auto
+OPENCLAW_WHATSAPP_DM_POLICY=open
+```
+
+(Image understanding auto-selects Cloudflare when `RESPONDER_PROVIDER=cloudflare`.)
+
+## Build & run
+
+Build on the target host so the architecture matches (Oracle = arm64):
+
+```bash
+docker build -t whatsapp-bot .
+
+docker run -d --name whatsapp-bot \
+  --restart unless-stopped \
+  --env-file .env.docker \
+  -v wa-data:/data \
+  -p 8790:8790 \
+  whatsapp-bot
+```
+
+Put your `bot-policy.local.json` into the volume before/after first start:
+
+```bash
+docker cp bot-policy.local.json whatsapp-bot:/data/bot-policy.local.json
+docker restart whatsapp-bot
+```
+
+## First run: link WhatsApp
+
+On first start there is no session, so the gateway prints a QR (or pairing code)
+in the logs. Scan it from your phone (WhatsApp → Linked devices):
+
+```bash
+docker logs -f whatsapp-bot
+```
+
+After linking, the session persists in the `wa-data` volume. Your phone must come
+online at least once every ~14 days or WhatsApp unlinks the device. Only one host
+may use a given session at a time — do not run it in two places.
+
+## Oracle Cloud Always Free (outline)
+
+1. Create an **Ampere A1 (arm64)** VM, Ubuntu 22.04, in an Always Free shape.
+2. Install Docker: `curl -fsSL https://get.docker.com | sh`.
+3. Copy the repo (git clone), add `.env.docker` and `bot-policy.local.json`.
+4. `docker build -t whatsapp-bot .` then the `docker run` above.
+5. `docker logs -f whatsapp-bot` and scan the QR.
+6. Open egress only as needed; the bot makes outbound HTTPS to Cloudflare/Tavily
+   and WhatsApp — no inbound ports are required unless you use the Twilio webhook.
+
+## Operations
+
+```bash
+docker logs -f whatsapp-bot          # all three processes
+docker restart whatsapp-bot          # restart
+docker exec -it whatsapp-bot bash    # shell inside
+```
+
+Updating: `git pull`, `docker build -t whatsapp-bot .`, `docker stop/rm`, run
+again — the `wa-data` volume keeps the WhatsApp session.

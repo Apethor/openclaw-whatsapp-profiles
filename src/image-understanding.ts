@@ -20,10 +20,39 @@ export type ImageUnderstandingResult =
 type ChatCompletionResponse = {
   choices?: Array<{
     message?: {
-      content?: string;
+      content?: unknown;
     };
   }>;
 };
+
+// OpenAI-compatible endpoints differ on message.content: a string for most,
+// an array of parts for some, or an auto-parsed object on Cloudflare. Flatten
+// all shapes to text.
+function extractMessageContent(message: { content?: unknown } | undefined): string {
+  const content = message?.content;
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') {
+          return part;
+        }
+        const text = (part as { text?: unknown })?.text;
+        return typeof text === 'string' ? text : '';
+      })
+      .join('');
+  }
+  if (content && typeof content === 'object') {
+    try {
+      return JSON.stringify(content);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
 
 const IMAGE_EXTENSIONS = /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i;
 
@@ -320,7 +349,7 @@ async function understandWithChatCompletions(input: {
     }
 
     const data = (await response.json()) as ChatCompletionResponse;
-    const text = data.choices?.[0]?.message?.content?.trim();
+    const text = extractMessageContent(data.choices?.[0]?.message).trim();
     if (!text) {
       return { ok: false, reason: 'image understanding returned empty text' };
     }

@@ -99,6 +99,36 @@ export async function transcribeVoiceMessage(
 
   try {
     const buffer = await fs.readFile(media.path);
+
+    // Cloudflare Workers AI Whisper is not OpenAI-compatible: POST base64 audio
+    // to ai/run/<model> and read result.text.
+    if (transcriber.provider === 'cloudflare') {
+      const response = await fetch(`${transcriber.baseUrl.replace(/\/$/, '')}/${transcriber.model}`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${transcriber.apiKey}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ audio: buffer.toString('base64') })
+      });
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          reason: `transcriber failed (${response.status})`,
+          error: await readResponseText(response)
+        };
+      }
+
+      const data = (await response.json()) as { result?: { text?: unknown } };
+      const text = typeof data.result?.text === 'string' ? data.result.text.trim() : '';
+      if (!text) {
+        return { ok: false, reason: 'transcriber returned empty text' };
+      }
+      return { ok: true, text, model: transcriber.model };
+    }
+
     const form = new FormData();
     form.append('model', transcriber.model);
     form.append(

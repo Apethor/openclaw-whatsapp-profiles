@@ -1,0 +1,17 @@
+node_modules
+data
+.git
+.gitignore
+*.log
+.env
+.env.*
+!.env.example
+dist
+.tmp-npm-cache
+.codex-agent-session-manager
+**/__pycache__
+*.bat
+config/bot-policy.local.json
+openclaw-test-home
+.claude
+scratchpad
