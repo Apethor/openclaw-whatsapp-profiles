@@ -23,3 +23,6 @@ config/bot-policy.local.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Deployment connection config (host/key) — keep local.
+scripts/deploy/deploy.env

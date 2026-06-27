@@ -85,16 +85,25 @@ docker build -t whatsapp-bot .
 docker run -d --name whatsapp-bot \
   --restart unless-stopped \
   --env-file .env.docker \
-  -v wa-data:/data \
-  -p 8790:8790 \
+  -v /home/ubuntu/wa-data:/data \
+  -v /home/ubuntu/wa-data/openclaw:/root/.openclaw \
   whatsapp-bot
 ```
 
-Put your `bot-policy.local.json` into the volume before/after first start:
+**Both mounts matter.** `/data` holds the policy and `BOT_AUTH_DIR`, but the
+OpenClaw WhatsApp **linked-device session lives in `/root/.openclaw`** (along with
+the installed plugins). Persist it too, or every `docker run` (recreating the
+container) drops the link and re-prompts the QR — a `docker restart` of the same
+container would keep it, but recreation (image update, model change) would not.
+Persisting it also skips the per-start plugin reinstall.
+
+`scripts/deploy/bot.sh` (see Operations below) always uses both mounts.
+
+Put your `bot-policy.local.json` into the bind-mounted data dir before first start:
 
 ```bash
-docker cp bot-policy.local.json whatsapp-bot:/data/bot-policy.local.json
-docker restart whatsapp-bot
+mkdir -p /home/ubuntu/wa-data
+cp bot-policy.local.json /home/ubuntu/wa-data/bot-policy.local.json
 ```
 
 ## First run: link WhatsApp
@@ -122,11 +131,29 @@ may use a given session at a time — do not run it in two places.
 
 ## Operations
 
+`scripts/deploy/bot.sh` wraps the day-to-day ops from any machine (no need to SSH
+by hand). Copy `scripts/deploy/deploy.env.example` to `scripts/deploy/deploy.env`
+(gitignored) and set `OCI_VM_HOST` + `OCI_SSH_KEY`. Then:
+
 ```bash
-docker logs -f whatsapp-bot          # all three processes
-docker restart whatsapp-bot          # restart
-docker exec -it whatsapp-bot bash    # shell inside
+bash scripts/deploy/bot.sh status            # container + WhatsApp channel state
+bash scripts/deploy/bot.sh logs --since 20m  # logs (add --follow or --grep PATTERN)
+bash scripts/deploy/bot.sh actions           # parse planner decisions + replies
+bash scripts/deploy/bot.sh restart           # restart (keeps the session)
+bash scripts/deploy/bot.sh update            # git pull + rebuild + restart (deploy latest)
+bash scripts/deploy/bot.sh set-env RESPONDER_CLOUDFLARE_MODEL=@cf/meta/llama-4-scout-17b-16e-instruct
+bash scripts/deploy/bot.sh qr                # (re)link WhatsApp via a live QR
+bash scripts/deploy/bot.sh exec <cmd>        # run a command inside the container
+bash scripts/deploy/bot.sh ssh [cmd]         # ssh to the host
 ```
 
-Updating: `git pull`, `docker build -t whatsapp-bot .`, `docker stop/rm`, run
-again — the `wa-data` volume keeps the WhatsApp session.
+`set-env` is the quick way to change a single setting (e.g. the chat model)
+without a rebuild — it upserts the key in `.env.docker` and restarts.
+
+Raw equivalents if you are on the host:
+
+```bash
+docker logs -f whatsapp-bot
+docker restart whatsapp-bot
+docker exec -it whatsapp-bot bash
+```
