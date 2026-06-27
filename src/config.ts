@@ -301,11 +301,14 @@ export function loadConfig(): AppConfig {
   const speechProvider = z
     .enum(['openai', 'local'])
     .parse(process.env.SPEECH_PROVIDER ?? (responderProvider === 'cloudflare' ? 'local' : 'openai'));
-  const ffmpegCommandResolved = resolveOptionalCommand(
-    process.env.MEDIA_FFMPEG_COMMAND ??
-      process.env.CODEX_PROXY_FFMPEG_COMMAND ??
-      process.env.WHISPER_LOCAL_FFMPEG_COMMAND
-  );
+  // Fall back to `ffmpeg` on PATH when no explicit path is set, so local opus
+  // TTS and sticker conversion work on hosts where ffmpeg is installed normally.
+  const ffmpegCommandResolved =
+    resolveOptionalCommand(
+      process.env.MEDIA_FFMPEG_COMMAND ??
+        process.env.CODEX_PROXY_FFMPEG_COMMAND ??
+        process.env.WHISPER_LOCAL_FFMPEG_COMMAND
+    ) ?? 'ffmpeg';
   const proxyTranscriberProvider = process.env.CODEX_PROXY_TRANSCRIBER_PROVIDER;
   const proxyMediaProvider = process.env.CODEX_PROXY_MEDIA_PROVIDER ?? 'off';
   const openAiApiKey = process.env.OPENAI_API_KEY;

@@ -50,7 +50,7 @@ ENV NODE_ENV=production \
 # Without this volume the bot must re-scan the QR on every container recreation.
 VOLUME ["/data"]
 
-# Worker inbound hook (the bot's HTTP endpoint).
-EXPOSE 8790
+# No inbound ports are required: the worker hook (8790) is internal to the
+# container; the bot only makes outbound HTTPS to Cloudflare/Tavily/WhatsApp.
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker/entrypoint.sh"]

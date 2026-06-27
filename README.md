@@ -195,6 +195,20 @@ RESPONDER_API_KEY=your-api-key
 RESPONDER_MODEL=gpt-4o-mini
 ```
 
+All-Cloudflare backend (recommended for self-hosting — chat/vision/image/transcription on Cloudflare Workers AI, web search via Tavily, TTS via local edge-tts; no local model/CLI/proxy):
+
+```text
+CLOUDFLARE_ACCOUNT_ID=...
+CLOUDFLARE_API_TOKEN=...
+TAVILY_API_KEY=...
+RESPONDER_PROVIDER=cloudflare
+IMAGE_GENERATOR_PROVIDER=cloudflare
+TRANSCRIBER_PROVIDER=cloudflare
+SPEECH_PROVIDER=local
+```
+
+This is the setup the [Docker / cloud deployment](docs/operations/docker.md) ships (e.g. Oracle Cloud Always Free). Chat models cannot browse, so the worker runs a Tavily `web_search` planner action and injects results.
+
 Optional Claude Code proxy mode (chat + inbound image understanding via the `claude` CLI):
 
 ```text
@@ -238,6 +252,7 @@ Twilio is not started by `warmup`; run it separately. Expose only `http://127.0.
 - [Codex proxy](docs/operations/codex-proxy.md)
 - [Image generation](docs/operations/image-generation.md)
 - [Voice notes](docs/operations/voice-notes.md)
+- [Docker / cloud deployment](docs/operations/docker.md)
 - [Hosting](docs/operations/hosting.md)
 - [Security](docs/security.md)
 - [Product direction](docs/product-direction.md)

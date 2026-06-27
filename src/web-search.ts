@@ -45,6 +45,7 @@ export async function resolveWebSearchPromptContext(input: {
     });
 
     if (!response.ok) {
+      console.warn(`[web-search] tavily failed (${response.status}) for query: ${query.slice(0, 80)}`);
       return undefined;
     }
 
@@ -65,7 +66,9 @@ export async function resolveWebSearchPromptContext(input: {
     }
 
     return { prompt: lines.join('\n\n'), query, resultCount: results.length };
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[web-search] tavily request error for query "${query.slice(0, 80)}": ${message}`);
     return undefined;
   } finally {
     clearTimeout(timeout);

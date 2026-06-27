@@ -56,9 +56,24 @@ CODEX_PROXY_ENABLED=false
 WHISPER_LOCAL_ENABLED=false
 BOT_MODE=auto
 OPENCLAW_WHATSAPP_DM_POLICY=open
+# Required: OpenClaw >=2026.6.10 refuses to bind the gateway without auth.
+OPENCLAW_GATEWAY_TOKEN=<a strong random token, e.g. openssl rand -hex 24>
 ```
 
 (Image understanding auto-selects Cloudflare when `RESPONDER_PROVIDER=cloudflare`.)
+
+### Gotchas learned in deployment
+
+- **`OPENCLAW_GATEWAY_TOKEN` is mandatory.** Without it the gateway logs
+  `Refusing to bind gateway to auto without auth` and never connects.
+- **OpenClaw must be >=2026.6.10** (pinned in package.json) — the clawhub
+  `@openclaw/whatsapp` plugin requires that runtime; older pins fail to install
+  the WhatsApp channel in a fresh container.
+- **Oracle Always Free ARM (A1.Flex) is often "out of host capacity".** The
+  AMD `VM.Standard.E2.1.Micro` (1 GB) is the reliable fallback; add ~3 GB swap
+  (`fallocate`/`mkswap`/`swapon`) so `npm install` and the build don't OOM.
+- The native sticker patch (`openclaw:patch-whatsapp-stickers`) does not apply
+  on 2026.6.10 yet (non-fatal warning); native sticker sending may be unavailable.
 
 ## Build & run
 
