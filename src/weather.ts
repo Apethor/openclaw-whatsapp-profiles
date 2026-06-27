@@ -378,19 +378,12 @@ function extractLocationQuery(text: string): string | undefined {
     return query;
   }
 
-  // Fallback for the planner's get_weather query, which is often just the
-  // location with no preposition ("Rio Pequeno São Paulo"). Only treat the whole
-  // text as a location when it actually looks like one (city/state/CEP/etc.) or
-  // starts with a weather noun — otherwise geocoding would fuzzy-match filler
-  // ("vai chover hoje?") to a random town.
-  const startsWithWeatherNoun = /^\s*(?:clima|tempo|previsao|weather|forecast)\b/iu.test(
-    normalizeText(withoutCoordinates)
-  );
-  if (startsWithWeatherNoun || isShortLocationLikeText(withoutCoordinates)) {
-    return cleanupLocationQuery(withoutCoordinates);
-  }
-
-  return undefined;
+  // Fallback: the planner often emits the bare location with no preposition
+  // ("Dallas", "Rio Pequeno São Paulo"). Treat the whole cleaned text as the
+  // location — geocodeSingleLocation validates the result name, so filler that
+  // collapses to a stray word ("vai chover hoje?" -> "vai") is rejected instead
+  // of being fuzzy-matched to a random town.
+  return cleanupLocationQuery(withoutCoordinates);
 }
 
 function formatDateInTimeZone(date: Date, timeZone?: string): string {
@@ -531,6 +524,20 @@ async function geocodeSingleLocation(query: string, originalQuery: string, confi
   );
   const [best] = results.sort((left, right) => (right.population ?? 0) - (left.population ?? 0));
   if (!best || !validLatitude(best.latitude) || !validLongitude(best.longitude)) {
+    return undefined;
+  }
+
+  // The Open-Meteo geocoder fuzzy-matches anything to some place ("vai" ->
+  // "Vanimo"). Accept only when the result name actually relates to the query,
+  // so stray words from a locationless message are rejected.
+  const queryNormalized = normalizeForIndex(query);
+  const nameNormalized = normalizeForIndex(best.name ?? '');
+  const nameRelatesToQuery =
+    nameNormalized.length > 0 &&
+    (queryNormalized.includes(nameNormalized) ||
+      nameNormalized.includes(queryNormalized) ||
+      queryNormalized.split(/\s+/u).some((word) => word.length > 3 && nameNormalized.includes(word)));
+  if (!nameRelatesToQuery) {
     return undefined;
   }
 
