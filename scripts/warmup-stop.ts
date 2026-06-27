@@ -9,7 +9,8 @@ const names: ManagedName[] = [
   'openclaw-worker',
   'openclaw-control',
   'openclaw-gateway',
-  'codex-proxy'
+  'codex-proxy',
+  'claude-proxy'
 ];
 
 printStatuses(names.map(stopManaged));

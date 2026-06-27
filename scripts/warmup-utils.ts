@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 export type ManagedName =
   | 'whisper-local'
   | 'codex-proxy'
+  | 'claude-proxy'
   | 'openclaw-gateway'
   | 'openclaw-control'
   | 'openclaw-worker';

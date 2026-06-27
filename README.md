@@ -13,13 +13,16 @@ The main flow is OpenClaw-only. Twilio support is included as an experimental we
 - Image generation, profile-gated with `tools.imageGeneration=true`, delivered as WhatsApp media.
 - Native WhatsApp sticker generation, profile-gated with `tools.stickerGeneration=true`, delivered through OpenClaw as `asSticker=true`.
 - Audio replies, profile-gated with `voice.reply.enabled=true`, either on request or for every reply.
-- Optional `codex-proxy` for local Codex CLI-backed responses, Codex image generation, local TTS, and local Whisper forwarding.
+- Optional `claude-proxy` to back replies and inbound image understanding with the `claude` CLI (Claude Code subscription).
+- Optional `codex-proxy` for local Codex CLI-backed responses, local TTS, and local Whisper forwarding.
+- Cloudflare Workers AI image generation (`flux-1-schnell`) for the claude backend, since the `claude` CLI cannot generate images.
 
 ## What It Runs
 
 - OpenClaw gateway: WhatsApp connection and delivery.
 - `openclaw-control`: local send endpoint for manual/test sends.
 - `openclaw-worker`: inbound policy/profile worker.
+- Optional `claude-proxy`: local OpenAI-compatible wrapper for the `claude` CLI (chat + vision).
 - Optional `codex-proxy`: local OpenAI-compatible wrapper for `codex exec` or local transcription forwarding.
 - Optional `whisper-local`: local `whisper.cpp` transcription server for WhatsApp voice notes.
 - Optional Twilio webhook worker for sandbox testing.
@@ -148,7 +151,7 @@ Inbound messages are processed sequentially per WhatsApp conversation. The worke
 
 Before tool side effects, the worker asks the agent for a structured action plan. Planned actions include `get_weather`, `generate_image`, `generate_sticker`, and `reply_audio`; the worker still enforces profile opt-in, delivery gates, rate limits, and provider configuration before executing anything.
 
-Profiles can opt into image generation with `tools.imageGeneration=true`. When the agent plans `generate_image`, the worker calls the Image API, saves the generated file under `MEDIA_OUTPUT_DIR`, and sends it through OpenClaw with `openclaw message send --media`. If the planned action sets `useRecentImages=true`, the worker sends up to `MEDIA_REFERENCE_MAX_IMAGES` recent inbound images to the edit/reference endpoint instead of generating from text alone. In direct mode, configure `IMAGE_GENERATOR_API_KEY` or `OPENAI_API_KEY`; in Codex proxy mode, set `CODEX_PROXY_MEDIA_PROVIDER=openai` for upstream pass-through or `CODEX_PROXY_MEDIA_PROVIDER=codex-cli` for local Codex image generation/reference generation.
+Profiles can opt into image generation with `tools.imageGeneration=true`. When the agent plans `generate_image`, the worker calls the configured image provider, saves the generated file under `MEDIA_OUTPUT_DIR`, and sends it through OpenClaw with `openclaw message send --media`. If the planned action sets `useRecentImages=true`, the worker sends up to `MEDIA_REFERENCE_MAX_IMAGES` recent inbound images to the edit/reference endpoint instead of generating from text alone. With `IMAGE_GENERATOR_PROVIDER=cloudflare` (the default when `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` are set) generation runs on Cloudflare Workers AI (`flux-1-schnell`); with `IMAGE_GENERATOR_PROVIDER=openai` it uses an OpenAI-compatible endpoint (`IMAGE_GENERATOR_API_KEY`/`OPENAI_API_KEY`, or `CODEX_PROXY_MEDIA_PROVIDER=codex-cli` for local Codex generation). See [Image generation](docs/operations/image-generation.md).
 
 Profiles can opt into native WhatsApp sticker generation with `tools.stickerGeneration=true`. When the agent plans `generate_sticker`, the worker uses the same image provider, optionally includes recent inbound images as references, asks for a flat `#00ff00` chroma-key source image, removes that key with FFmpeg, cleans transparent pixels with Pillow, writes a 512x512 lossless WebP with exact alpha, and sends it through OpenClaw's WhatsApp `upload-file` gateway action as `asSticker=true`. Run `npm run media:install` for the Pillow dependency. `npm run warmup` reapplies the local OpenClaw WhatsApp sticker patch after plugin install/refresh; configure `MEDIA_FFMPEG_COMMAND` or reuse `CODEX_PROXY_FFMPEG_COMMAND`.
 
@@ -192,6 +195,17 @@ RESPONDER_API_KEY=your-api-key
 RESPONDER_MODEL=gpt-4o-mini
 ```
 
+Optional Claude Code proxy mode (chat + inbound image understanding via the `claude` CLI):
+
+```text
+CLAUDE_PROXY_ENABLED=true
+RESPONDER_BASE_URL=http://127.0.0.1:8789/v1
+RESPONDER_API_KEY=dev-local-change-me
+RESPONDER_MODEL=sonnet
+```
+
+`CLAUDE_PROXY_ENABLED` wins over `CODEX_PROXY_ENABLED`. The `claude` CLI cannot generate images, transcribe, or do TTS, so on the claude backend image generation uses Cloudflare Workers AI (`IMAGE_GENERATOR_PROVIDER=cloudflare`) while transcription/TTS stay on their own providers (e.g. local Whisper / edge via codex-proxy). See [Claude proxy](docs/operations/claude-proxy.md).
+
 Optional Codex CLI proxy mode:
 
 ```text
@@ -203,7 +217,7 @@ RESPONDER_MODEL=gpt-5.4
 
 When `CODEX_PROXY_ENABLED=true` and `CODEX_PROXY_MEDIA_PROVIDER` is enabled, image generation and speech defaults also point at `http://127.0.0.1:8787/v1` unless `IMAGE_GENERATOR_BASE_URL` or `SPEECH_BASE_URL` is set explicitly. Use `CODEX_PROXY_MEDIA_PROVIDER=openai` for upstream pass-through or `CODEX_PROXY_MEDIA_PROVIDER=codex-cli` for local Codex image generation plus local TTS.
 
-See [Codex proxy and responder provider](docs/operations/codex-proxy.md).
+See [Claude proxy](docs/operations/claude-proxy.md) and [Codex proxy and responder provider](docs/operations/codex-proxy.md).
 
 ## Optional Twilio Sandbox
 
@@ -220,7 +234,9 @@ Twilio is not started by `warmup`; run it separately. Expose only `http://127.0.
 - [Architecture](docs/architecture.md)
 - [OpenClaw operations](docs/operations/openclaw.md)
 - [Guidance profiles](docs/operations/guidance-profiles.md)
+- [Claude proxy](docs/operations/claude-proxy.md)
 - [Codex proxy](docs/operations/codex-proxy.md)
+- [Image generation](docs/operations/image-generation.md)
 - [Voice notes](docs/operations/voice-notes.md)
 - [Hosting](docs/operations/hosting.md)
 - [Security](docs/security.md)

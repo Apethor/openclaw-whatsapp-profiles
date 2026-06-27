@@ -13,12 +13,16 @@ const names: ManagedName[] = [
   'openclaw-worker',
   'openclaw-control',
   'openclaw-gateway',
-  'codex-proxy'
+  'codex-proxy',
+  'claude-proxy'
 ];
 
 const ports = [
   ...(process.env.CODEX_PROXY_ENABLED === 'true'
     ? [Number(process.env.CODEX_PROXY_PORT ?? '8787')]
+    : []),
+  ...(process.env.CLAUDE_PROXY_ENABLED === 'true'
+    ? [Number(process.env.CLAUDE_PROXY_PORT ?? '8789')]
     : []),
   ...(process.env.WHISPER_LOCAL_ENABLED === 'true'
     ? [Number(process.env.WHISPER_LOCAL_PORT ?? '2022')]

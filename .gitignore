@@ -4,6 +4,7 @@ dist/
 .env.*
 !.env.example
 .tmp-npm-cache/
+.codex-agent-session-manager/
 output/
 out.txt
 *.log

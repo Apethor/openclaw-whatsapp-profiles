@@ -175,6 +175,7 @@ export type AppConfig = {
     referenceMaxImageBytes: number;
   };
   imageGenerator: {
+    provider: 'openai' | 'cloudflare';
     baseUrl: string;
     apiKey?: string;
     model: string;
@@ -184,7 +185,7 @@ export type AppConfig = {
     timeoutMs: number;
   };
   imageUnderstanding: {
-    provider: 'off' | 'openai' | 'custom' | 'codex-cli';
+    provider: 'off' | 'openai' | 'custom' | 'codex-cli' | 'claude-cli';
     baseUrl: string;
     apiKey?: string;
     model: string;
@@ -194,6 +195,8 @@ export type AppConfig = {
     codexBin: string;
     codexSandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
     codexWorkdir: string;
+    claudeBin: string;
+    claudeEffort?: string;
     maxPromptChars: number;
   };
   speech: {
@@ -247,6 +250,16 @@ export function loadConfig(): AppConfig {
   const codexProxyPort = process.env.CODEX_PROXY_PORT ?? '8787';
   const codexProxyEnabled = process.env.CODEX_PROXY_ENABLED === 'true';
   const codexProxyBaseUrl = `http://${codexProxyHost}:${codexProxyPort}/v1`;
+  // Claude proxy takes precedence over the codex proxy when both are enabled.
+  // The `claude` CLI does chat and vision (image understanding) natively, but
+  // cannot generate images, transcribe audio, or synthesize speech — those keep
+  // flowing to their direct providers (OpenAI / local Whisper / local TTS).
+  const claudeProxyHost = process.env.CLAUDE_PROXY_HOST ?? '127.0.0.1';
+  const claudeProxyPort = process.env.CLAUDE_PROXY_PORT ?? '8789';
+  const claudeProxyEnabled = process.env.CLAUDE_PROXY_ENABLED === 'true';
+  const claudeProxyBaseUrl = `http://${claudeProxyHost}:${claudeProxyPort}/v1`;
+  const claudeProxyModel = process.env.CLAUDE_PROXY_MODEL ?? 'sonnet';
+  const claudeBinDefault = process.platform === 'win32' ? 'claude.exe' : 'claude';
   const proxyTranscriberProvider = process.env.CODEX_PROXY_TRANSCRIBER_PROVIDER;
   const proxyMediaProvider = process.env.CODEX_PROXY_MEDIA_PROVIDER ?? 'off';
   const openAiApiKey = process.env.OPENAI_API_KEY;
@@ -259,18 +272,74 @@ export function loadConfig(): AppConfig {
       ? process.env.WHISPER_LOCAL_MODEL ?? 'base'
       : 'gpt-4o-mini-transcribe';
   const imageUnderstandingProvider = z
-    .enum(['off', 'openai', 'custom', 'codex-cli'])
+    .enum(['off', 'openai', 'custom', 'codex-cli', 'claude-cli'])
     .parse(
       process.env.IMAGE_UNDERSTANDING_PROVIDER ??
-        (codexProxyEnabled && proxyMediaProvider === 'codex-cli' ? 'codex-cli' : 'openai')
+        (claudeProxyEnabled
+          ? 'claude-cli'
+          : codexProxyEnabled && proxyMediaProvider === 'codex-cli'
+            ? 'codex-cli'
+            : 'openai')
     );
   const imageUnderstandingTimeoutMs = Number(
     process.env.IMAGE_UNDERSTANDING_TIMEOUT_MS ??
       (imageUnderstandingProvider === 'codex-cli'
         ? process.env.CODEX_PROXY_MEDIA_TIMEOUT_MS ?? process.env.CODEX_PROXY_TIMEOUT_MS ?? '300000'
-        : '120000')
+        : imageUnderstandingProvider === 'claude-cli'
+          ? process.env.CLAUDE_PROXY_TIMEOUT_MS ?? '300000'
+          : '120000')
   );
   const weatherCountryCode = process.env.WEATHER_GEOCODING_COUNTRY_CODE?.trim().toUpperCase();
+
+  // Image generation: the claude CLI cannot generate images, so when the bot is
+  // on the claude backend we generate via Cloudflare Workers AI (its own REST
+  // API, not OpenAI-compatible). Auto-selected when Cloudflare creds are present
+  // unless IMAGE_GENERATOR_PROVIDER overrides it.
+  const cloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  const cloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  const cloudflareImageConfigured = Boolean(
+    cloudflareAccountId &&
+      !cloudflareAccountId.startsWith('PUT-YOUR') &&
+      cloudflareApiToken &&
+      !cloudflareApiToken.startsWith('PUT-YOUR')
+  );
+  const imageGeneratorProvider = z
+    .enum(['openai', 'cloudflare'])
+    .parse(process.env.IMAGE_GENERATOR_PROVIDER ?? (cloudflareImageConfigured ? 'cloudflare' : 'openai'));
+  const imageGeneratorSize = process.env.IMAGE_GENERATOR_SIZE ?? '1024x1024';
+  const imageGeneratorQuality = process.env.IMAGE_GENERATOR_QUALITY ?? 'low';
+  const imageGeneratorOutputFormat = z
+    .enum(['png', 'jpeg', 'webp'])
+    .parse(process.env.IMAGE_GENERATOR_OUTPUT_FORMAT ?? 'png');
+  const imageGeneratorTimeoutMs = Number(process.env.IMAGE_GENERATOR_TIMEOUT_MS ?? '120000');
+  const imageGenerator: AppConfig['imageGenerator'] =
+    imageGeneratorProvider === 'cloudflare'
+      ? {
+          provider: 'cloudflare',
+          baseUrl:
+            process.env.IMAGE_GENERATOR_BASE_URL ??
+            `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId ?? ''}/ai/run`,
+          // CF uses its own bearer token; never fall back to IMAGE_GENERATOR_API_KEY
+          // (an OpenAI key there would be sent as the CF Authorization header).
+          apiKey: cloudflareApiToken,
+          // Dedicated var so a leftover IMAGE_GENERATOR_MODEL (an OpenAI/codex id)
+          // does not leak into the Cloudflare model slug.
+          model: process.env.IMAGE_GENERATOR_CLOUDFLARE_MODEL ?? '@cf/black-forest-labs/flux-1-schnell',
+          size: imageGeneratorSize,
+          quality: imageGeneratorQuality,
+          outputFormat: imageGeneratorOutputFormat,
+          timeoutMs: imageGeneratorTimeoutMs
+        }
+      : {
+          provider: 'openai',
+          baseUrl: process.env.IMAGE_GENERATOR_BASE_URL ?? mediaBaseUrlDefault,
+          apiKey: process.env.IMAGE_GENERATOR_API_KEY ?? mediaApiKeyDefault,
+          model: process.env.IMAGE_GENERATOR_MODEL ?? 'gpt-image-1-mini',
+          size: imageGeneratorSize,
+          quality: imageGeneratorQuality,
+          outputFormat: imageGeneratorOutputFormat,
+          timeoutMs: imageGeneratorTimeoutMs
+        };
 
   return {
     mode: botModeSchema.parse(process.env.BOT_MODE ?? 'observe'),
@@ -285,11 +354,25 @@ export function loadConfig(): AppConfig {
     responder: {
       baseUrl:
         process.env.RESPONDER_BASE_URL ??
-        (codexProxyEnabled ? codexProxyBaseUrl : 'https://api.openai.com/v1'),
-      apiKey: process.env.RESPONDER_API_KEY ?? (codexProxyEnabled ? process.env.CODEX_PROXY_API_KEY : undefined),
+        (claudeProxyEnabled
+          ? claudeProxyBaseUrl
+          : codexProxyEnabled
+            ? codexProxyBaseUrl
+            : 'https://api.openai.com/v1'),
+      apiKey:
+        process.env.RESPONDER_API_KEY ??
+        (claudeProxyEnabled
+          ? process.env.CLAUDE_PROXY_API_KEY
+          : codexProxyEnabled
+            ? process.env.CODEX_PROXY_API_KEY
+            : undefined),
       model:
         process.env.RESPONDER_MODEL ??
-        (codexProxyEnabled ? process.env.CODEX_PROXY_MODEL ?? 'gpt-5.4' : 'gpt-4o-mini'),
+        (claudeProxyEnabled
+          ? claudeProxyModel
+          : codexProxyEnabled
+            ? process.env.CODEX_PROXY_MODEL ?? 'gpt-5.4'
+            : 'gpt-4o-mini'),
       timeoutMs: Number(process.env.RESPONDER_TIMEOUT_MS ?? '120000')
     },
     weather: {
@@ -312,15 +395,7 @@ export function loadConfig(): AppConfig {
       referenceMaxAgeMinutes: Number(process.env.MEDIA_REFERENCE_MAX_AGE_MINUTES ?? '120'),
       referenceMaxImageBytes: Number(process.env.MEDIA_REFERENCE_MAX_IMAGE_BYTES ?? String(20 * 1024 * 1024))
     },
-    imageGenerator: {
-      baseUrl: process.env.IMAGE_GENERATOR_BASE_URL ?? mediaBaseUrlDefault,
-      apiKey: process.env.IMAGE_GENERATOR_API_KEY ?? mediaApiKeyDefault,
-      model: process.env.IMAGE_GENERATOR_MODEL ?? 'gpt-image-1-mini',
-      size: process.env.IMAGE_GENERATOR_SIZE ?? '1024x1024',
-      quality: process.env.IMAGE_GENERATOR_QUALITY ?? 'low',
-      outputFormat: z.enum(['png', 'jpeg', 'webp']).parse(process.env.IMAGE_GENERATOR_OUTPUT_FORMAT ?? 'png'),
-      timeoutMs: Number(process.env.IMAGE_GENERATOR_TIMEOUT_MS ?? '120000')
-    },
+    imageGenerator,
     imageUnderstanding: {
       provider: imageUnderstandingProvider,
       baseUrl: process.env.IMAGE_UNDERSTANDING_BASE_URL ?? 'https://api.openai.com/v1',
@@ -332,7 +407,9 @@ export function loadConfig(): AppConfig {
         process.env.IMAGE_UNDERSTANDING_MODEL ??
         (imageUnderstandingProvider === 'codex-cli'
           ? process.env.CODEX_PROXY_MEDIA_CODEX_MODEL ?? process.env.CODEX_PROXY_MODEL ?? 'gpt-5.4-mini'
-          : 'gpt-4o-mini'),
+          : imageUnderstandingProvider === 'claude-cli'
+            ? claudeProxyModel
+            : 'gpt-4o-mini'),
       timeoutMs: imageUnderstandingTimeoutMs,
       maxImageBytes: Number(process.env.IMAGE_UNDERSTANDING_MAX_IMAGE_BYTES ?? String(10 * 1024 * 1024)),
       detail: z.enum(['auto', 'low', 'high']).parse(process.env.IMAGE_UNDERSTANDING_DETAIL ?? 'auto'),
@@ -346,7 +423,9 @@ export function loadConfig(): AppConfig {
             'read-only'
         ),
       codexWorkdir: path.resolve(process.env.IMAGE_UNDERSTANDING_CODEX_WORKDIR ?? process.env.CODEX_PROXY_WORKDIR ?? '.'),
-      maxPromptChars: Number(process.env.IMAGE_UNDERSTANDING_MAX_PROMPT_CHARS ?? process.env.CODEX_PROXY_MAX_PROMPT_CHARS ?? '20000')
+      claudeBin: process.env.IMAGE_UNDERSTANDING_CLAUDE_BIN ?? process.env.CLAUDE_PROXY_CLAUDE_BIN ?? claudeBinDefault,
+      claudeEffort: process.env.IMAGE_UNDERSTANDING_CLAUDE_EFFORT ?? process.env.CLAUDE_PROXY_EFFORT,
+      maxPromptChars: Number(process.env.IMAGE_UNDERSTANDING_MAX_PROMPT_CHARS ?? process.env.CLAUDE_PROXY_MAX_PROMPT_CHARS ?? process.env.CODEX_PROXY_MAX_PROMPT_CHARS ?? '20000')
     },
     speech: {
       baseUrl: process.env.SPEECH_BASE_URL ?? mediaBaseUrlDefault,

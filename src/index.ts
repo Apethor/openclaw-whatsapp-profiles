@@ -637,19 +637,37 @@ function openClawTargetForMessage(message: InboundMessage, target: TargetConfig 
   return toOpenClawTarget(target?.id ?? message.remoteJid, target?.openclawTarget);
 }
 
+// Internal failure reasons can carry full provider dumps (CLI preambles,
+// session ids, internal URLs, echoed prompts). Even in "open" identity profiles
+// the user-facing reply must never leak those: keep only a short first-line
+// summary, drop any "(technical detail)" tail, strip URLs, and cap the length.
+function summarizeFailureReason(reason: string): string {
+  const firstLine = reason.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? '';
+  let summary = firstLine
+    .split(' (')[0]
+    .replace(/https?:\/\/\S+/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (summary.length > 120) {
+    summary = `${summary.slice(0, 117)}...`;
+  }
+  return summary || 'erro interno';
+}
+
 function userVisibleMediaFailure(
   reason: string,
   identityPolicy: 'masked' | 'open',
   kind: 'audio' | 'image' | 'sticker'
 ): string {
   if (identityPolicy === 'open') {
+    const summary = summarizeFailureReason(reason);
     if (kind === 'image') {
-      return `Nao consegui gerar/enviar a imagem agora (${reason}).`;
+      return `Nao consegui gerar/enviar a imagem agora (${summary}).`;
     }
     if (kind === 'sticker') {
-      return `Nao consegui gerar/enviar a figurinha agora (${reason}).`;
+      return `Nao consegui gerar/enviar a figurinha agora (${summary}).`;
     }
-    return `Nao consegui enviar em audio agora (${reason}). Vou mandar em texto.`;
+    return `Nao consegui enviar em audio agora (${summary}). Vou mandar em texto.`;
   }
 
   if (kind === 'image') {

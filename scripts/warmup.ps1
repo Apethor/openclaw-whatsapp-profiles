@@ -48,6 +48,7 @@ Import-DotEnv
 $openclawCommand = Get-DotEnvValue "OPENCLAW_COMMAND" "openclaw"
 $openclawCommandForCmd = if ($openclawCommand -match '\s') { "`"$openclawCommand`"" } else { $openclawCommand }
 $codexProxyEnabled = (Get-DotEnvValue "CODEX_PROXY_ENABLED" "false") -eq "true"
+$claudeProxyEnabled = (Get-DotEnvValue "CLAUDE_PROXY_ENABLED" "false") -eq "true"
 $whisperLocalEnabled = (Get-DotEnvValue "WHISPER_LOCAL_ENABLED" "false") -eq "true"
 
 function Test-Port($port) {
@@ -84,6 +85,9 @@ function Wait-Port($port, $timeoutSeconds) {
 $ports = @()
 if ($codexProxyEnabled) {
   $ports += [int](Get-DotEnvValue "CODEX_PROXY_PORT" "8787")
+}
+if ($claudeProxyEnabled) {
+  $ports += [int](Get-DotEnvValue "CLAUDE_PROXY_PORT" "8789")
 }
 if ($whisperLocalEnabled) {
   $ports += [int](Get-DotEnvValue "WHISPER_LOCAL_PORT" "2022")
@@ -152,6 +156,11 @@ function Start-Managed($name, $command) {
   Write-Host "$name started pid=$($process.Id) log=$log"
 }
 
+if ($claudeProxyEnabled) {
+  Start-Managed "claude-proxy" "npm run claude-proxy"
+} else {
+  Write-Host "claude-proxy skipped CLAUDE_PROXY_ENABLED=false"
+}
 if ($codexProxyEnabled) {
   Start-Managed "codex-proxy" "npm run codex-proxy"
 } else {

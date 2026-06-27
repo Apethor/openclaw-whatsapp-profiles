@@ -18,13 +18,15 @@ const root = process.cwd();
 const env = { ...process.env };
 const openclawCommand = process.env.OPENCLAW_COMMAND?.trim() || 'openclaw';
 const codexProxyEnabled = process.env.CODEX_PROXY_ENABLED === 'true';
+const claudeProxyEnabled = process.env.CLAUDE_PROXY_ENABLED === 'true';
 const whisperLocalEnabled = process.env.WHISPER_LOCAL_ENABLED === 'true';
 const names: ManagedName[] = [
   ...(whisperLocalEnabled ? (['whisper-local'] as ManagedName[]) : []),
   'openclaw-worker',
   'openclaw-control',
   'openclaw-gateway',
-  'codex-proxy'
+  'codex-proxy',
+  'claude-proxy'
 ];
 
 function run(command: string, args: string[], label: string): boolean {
@@ -61,6 +63,7 @@ function inspectWhatsAppPlugin(): boolean {
 async function assertPortsClear(): Promise<void> {
   const ports = [
     ...(codexProxyEnabled ? [Number(process.env.CODEX_PROXY_PORT ?? '8787')] : []),
+    ...(claudeProxyEnabled ? [Number(process.env.CLAUDE_PROXY_PORT ?? '8789')] : []),
     ...(whisperLocalEnabled ? [Number(process.env.WHISPER_LOCAL_PORT ?? '2022')] : []),
     Number(process.env.OPENCLAW_CONTROL_PORT ?? '8788'),
     Number(process.env.WHATSAPP_ASSISTANT_HOOK_PORT ?? '8790'),
@@ -128,6 +131,7 @@ async function main(): Promise<void> {
   run('npm', ['run', 'openclaw:repair-config'], 'repair OpenClaw config');
 
   const started = [
+    ...(claudeProxyEnabled ? [spawnManaged('claude-proxy', 'npm', ['run', 'claude-proxy'], env)] : []),
     ...(codexProxyEnabled ? [spawnManaged('codex-proxy', 'npm', ['run', 'codex-proxy'], env)] : []),
     spawnManaged(
       'openclaw-gateway',
@@ -141,6 +145,9 @@ async function main(): Promise<void> {
 
   for (const info of started) {
     console.log(`${info.name} started pid=${info.pid} log=${info.logPath}`);
+  }
+  if (!claudeProxyEnabled) {
+    console.log('claude-proxy skipped CLAUDE_PROXY_ENABLED=false');
   }
   if (!codexProxyEnabled) {
     console.log('codex-proxy skipped CODEX_PROXY_ENABLED=false');
@@ -157,6 +164,12 @@ async function main(): Promise<void> {
   if (codexProxyEnabled) {
     await waitFor(
       () => httpOk(`http://127.0.0.1:${process.env.CODEX_PROXY_PORT ?? '8787'}/healthz`),
+      30_000
+    );
+  }
+  if (claudeProxyEnabled) {
+    await waitFor(
+      () => httpOk(`http://127.0.0.1:${process.env.CLAUDE_PROXY_PORT ?? '8789'}/healthz`),
       30_000
     );
   }

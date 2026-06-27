@@ -352,6 +352,93 @@ async function generateImageEditFile(input: {
   }
 }
 
+function parseImageSize(size: string): { width: number; height: number } {
+  const match = size.match(/^(\d+)\s*[x×]\s*(\d+)$/i);
+  if (match) {
+    return { width: Number(match[1]), height: Number(match[2]) };
+  }
+  return { width: 1024, height: 1024 };
+}
+
+// Cloudflare's JSON responses carry no mime type, so sniff the magic bytes
+// instead of assuming a format; the file extension drives the WhatsApp upload's
+// content type.
+function imageExtensionFromBytes(buffer: Buffer): string {
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  ) {
+    return 'png';
+  }
+  if (buffer.length >= 12 && buffer.toString('ascii', 8, 12) === 'WEBP') {
+    return 'webp';
+  }
+  return 'jpg';
+}
+
+// Cloudflare Workers AI text-to-image. Not OpenAI-compatible: the endpoint is
+// .../ai/run/<model> and the response is either JSON with a base64 image (Flux)
+// or raw image bytes (SDXL-family), so we branch on the content type. Reference
+// image bytes are not sent here; the caller already folds the textual reference
+// context into the prompt.
+async function generateCloudflareImageFile(input: {
+  prompt: string;
+  config: AppConfig['imageGenerator'];
+  outputDir: string;
+}): Promise<MediaGenerationResult> {
+  if (!input.config.apiKey) {
+    return { ok: false, reason: 'cloudflare image token not configured' };
+  }
+
+  try {
+    await fs.mkdir(input.outputDir, { recursive: true });
+    const url = `${input.config.baseUrl.replace(/\/$/, '')}/${input.config.model}`;
+    const isFlux = /flux/i.test(input.config.model);
+    const { width, height } = parseImageSize(input.config.size);
+    const body = isFlux
+      ? { prompt: input.prompt, steps: 6 }
+      : { prompt: input.prompt, width, height };
+
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${input.config.apiKey}`
+        },
+        body: JSON.stringify(body)
+      },
+      input.config.timeoutMs
+    );
+
+    if (!response.ok) {
+      return { ok: false, reason: `image generation failed (${await errorText(response)})` };
+    }
+
+    const contentType = response.headers.get('content-type') ?? '';
+    let buffer: Buffer;
+    if (contentType.includes('application/json')) {
+      const data = (await response.json()) as { success?: boolean; result?: { image?: string } };
+      if (!data.result?.image) {
+        return { ok: false, reason: 'cloudflare image generation returned no image data' };
+      }
+      buffer = Buffer.from(data.result.image, 'base64');
+    } else {
+      buffer = Buffer.from(await response.arrayBuffer());
+    }
+
+    const outputPath = mediaPath(input.outputDir, 'image', imageExtensionFromBytes(buffer));
+    await fs.writeFile(outputPath, buffer);
+    return { ok: true, media: { path: outputPath } };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function generateImageFile(input: {
   prompt: string;
   config: AppConfig['imageGenerator'];
@@ -361,6 +448,14 @@ export async function generateImageFile(input: {
 }): Promise<MediaGenerationResult> {
   if (!input.config.apiKey) {
     return { ok: false, reason: 'image generator API key not configured' };
+  }
+
+  if (input.config.provider === 'cloudflare') {
+    return generateCloudflareImageFile({
+      prompt: input.prompt,
+      config: input.config,
+      outputDir: input.outputDir
+    });
   }
 
   if (input.references?.length) {
