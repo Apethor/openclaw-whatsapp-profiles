@@ -68,8 +68,8 @@ export function imagePromptFromMessage(text: string, references: ImageReferenceI
   return [
     trimmed,
     ...referencePromptLines(references),
-    'Crie uma imagem unica, visualmente clara e adequada para enviar em WhatsApp.',
-    'Nao inclua texto, legenda, marca d agua ou interface dentro da imagem, a menos que o pedido solicite explicitamente.'
+    'Crie uma imagem unica e visualmente clara, adequada para enviar em um aplicativo de mensagens.',
+    'Nao inclua texto, legenda, marca d agua, logotipos de aplicativos, icones de redes sociais ou elementos de interface dentro da imagem, a menos que o pedido solicite explicitamente.'
   ].join('\n');
 }
 
@@ -82,15 +82,15 @@ function softenProtectedFranchiseReferences(text: string): string {
 
 export function stickerPromptFromMessage(text: string, references: ImageReferenceInput[] = []): string {
   const trimmed = text.trim();
-  const subject = softenProtectedFranchiseReferences(trimmed) || 'Uma figurinha divertida e simples para WhatsApp.';
+  const subject = softenProtectedFranchiseReferences(trimmed) || 'Uma figurinha divertida e simples.';
 
   return [
     subject,
     ...referencePromptLines(references),
-    'Crie uma imagem pensada para virar figurinha de WhatsApp: composicao quadrada, um assunto principal grande, claro e legivel em 512x512.',
+    'Crie uma imagem pensada para virar figurinha (adesivo): composicao quadrada, um assunto principal grande, claro e legivel em 512x512.',
     'Use fundo verde chroma-key perfeitamente plano #00ff00, sem sombras, gradientes ou textura. Nao use verde no assunto principal.',
     'Use alto contraste e contorno ou sombra suave no assunto principal para funcionar bem em tema claro e escuro depois que o fundo for removido.',
-    'Nao inclua texto, legenda, marca d agua ou interface dentro da imagem, a menos que o pedido solicite explicitamente.'
+    'Nao inclua texto, legenda, marca d agua, logotipos de aplicativos, icones de redes sociais ou elementos de interface dentro da imagem, a menos que o pedido solicite explicitamente.'
   ].join('\n');
 }
 

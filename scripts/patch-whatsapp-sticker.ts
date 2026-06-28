@@ -49,21 +49,40 @@ function replaceRequired(content: string, before: string, after: string, label: 
 }
 
 function patchSendApi(content: string): string {
-  const before = `else if (mediaType.startsWith("image/")) payload = {
-\t\t\t\timage: mediaBuffer,
-\t\t\t\tcaption: resolvedPayloadText.text || void 0,
-\t\t\t\tmimetype: mediaType
-\t\t\t};`;
-  const after = `else if (sendOptions?.asSticker === true && mediaType.startsWith("image/")) payload = {
+  // Inject a sticker branch immediately ahead of the image branch. Newer OpenClaw
+  // builds wrap the image payload in addWhatsAppImagePreviewFields(...); older ones
+  // used a plain object literal. Match either so the patch survives plugin updates
+  // that only reshape the image branch.
+  if (content.includes('sticker: mediaBuffer')) {
+    return content;
+  }
+
+  const stickerBranch = `else if (sendOptions?.asSticker === true && mediaType.startsWith("image/")) payload = {
 \t\t\t\tsticker: mediaBuffer,
 \t\t\t\tmimetype: mediaType
 \t\t\t};
-\t\t\telse if (mediaType.startsWith("image/")) payload = {
+\t\t\t`;
+
+  const imageBranchVariants = [
+    `else if (mediaType.startsWith("image/")) payload = await addWhatsAppImagePreviewFields({
 \t\t\t\timage: mediaBuffer,
 \t\t\t\tcaption: resolvedPayloadText.text || void 0,
 \t\t\t\tmimetype: mediaType
-\t\t\t};`;
-  return replaceRequired(content, before, after, 'send-api sticker payload');
+\t\t\t});`,
+    `else if (mediaType.startsWith("image/")) payload = {
+\t\t\t\timage: mediaBuffer,
+\t\t\t\tcaption: resolvedPayloadText.text || void 0,
+\t\t\t\tmimetype: mediaType
+\t\t\t};`
+  ];
+
+  for (const imageBranch of imageBranchVariants) {
+    if (content.includes(imageBranch)) {
+      return content.replace(imageBranch, stickerBranch + imageBranch);
+    }
+  }
+
+  throw new Error('could not patch send-api sticker payload: expected code was not found');
 }
 
 function patchSendOptions(content: string): string {
