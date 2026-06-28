@@ -51,6 +51,7 @@ ENV NODE_ENV=production \
     OPENCLAW_COMMAND=node_modules/.bin/openclaw \
     SPEECH_PROVIDER=local \
     SPEECH_LOCAL_TTS_PYTHON=python3 \
+    MEDIA_STICKER_PYTHON=python3 \
     MEDIA_FFMPEG_COMMAND=ffmpeg \
     BOT_POLICY_PATH=/data/bot-policy.local.json
 
