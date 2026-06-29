@@ -66,6 +66,18 @@ def remove_green_background(image: Image.Image, frame: int) -> bool:
     return True
 
 
+def despill_green(image: Image.Image) -> None:
+    """Clamp every green-dominant pixel down to a neutral tone (g -> max(r, b))."""
+    px = image.load()
+    width, height = image.size
+    for y in range(height):
+        for x in range(width):
+            r, g, b, a = px[x, y]
+            mx = max(r, b)
+            if g > mx:
+                px[x, y] = (r, mx, b, a)
+
+
 def fit_square(image: Image.Image, size: int) -> Image.Image:
     scale = min(size / image.width, size / image.height)
     target = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
@@ -88,8 +100,13 @@ def main() -> int:
     args = parser.parse_args()
 
     image = Image.open(args.input_image).convert("RGBA")
-    remove_green_background(image, max(1, args.border_frame))
+    keyed = remove_green_background(image, max(1, args.border_frame))
     square = fit_square(image, max(64, min(1024, args.size)))
+    if keyed:
+        # LANCZOS resizes the RGBA channels independently, so its ringing can push
+        # the green channel back above r/b at the antialiased edges and reintroduce
+        # a faint green rim. Despill once more on the final canvas to remove it.
+        despill_green(square)
 
     args.output_webp.parent.mkdir(parents=True, exist_ok=True)
     square.save(
