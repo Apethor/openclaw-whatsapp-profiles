@@ -422,7 +422,11 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
       },
       body: JSON.stringify({
         model: input.responder.model,
-        temperature: 0.4,
+        // 0.7 (vs the old 0.4) pulls the small 17B off its "safe" path — at low
+        // temperature it tends to fill short replies by echoing the user's own
+        // statement back as a tag-question ("vai visitar o Roberto, ne?"). More
+        // variance lets it actually acknowledge/add instead of mirroring.
+        temperature: 0.7,
         messages: [
           {
             role: 'system',
