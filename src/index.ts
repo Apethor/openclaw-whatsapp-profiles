@@ -1198,7 +1198,6 @@ async function handleInbound(payload: InboundPayload): Promise<unknown> {
     const sticker = await convertImageToStickerFile({
       imagePath: generated.media.path,
       outputDir: config.media.outputDir,
-      ffmpegCommand: config.media.ffmpegCommand,
       size: config.sticker.size,
       quality: config.sticker.quality,
       timeoutMs: config.sticker.timeoutMs

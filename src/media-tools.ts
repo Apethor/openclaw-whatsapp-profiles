@@ -543,61 +543,28 @@ export async function generateImageFile(input: {
 export async function convertImageToStickerFile(input: {
   imagePath: string;
   outputDir: string;
-  ffmpegCommand?: string;
   size: number;
   quality: number;
   timeoutMs: number;
 }): Promise<MediaGenerationResult> {
-  if (!input.ffmpegCommand) {
-    return { ok: false, reason: 'ffmpeg command not configured for sticker conversion' };
-  }
-
   try {
     await fs.mkdir(input.outputDir, { recursive: true });
     const size = Math.max(64, Math.min(1024, Math.round(input.size)));
     const quality = Math.max(1, Math.min(100, Math.round(input.quality)));
     const outputPath = mediaPath(input.outputDir, 'sticker', 'webp');
-    const intermediatePath = mediaPath(input.outputDir, 'sticker-intermediate', 'png');
-    const filter = [
-      'format=rgba',
-      'colorkey=0x00ff00:0.30:0.06',
-      `scale=${size}:${size}:force_original_aspect_ratio=decrease`,
-      `pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:color=black@0`,
-      'format=rgba'
-    ].join(',');
-    const ffmpegResult = await runFileWithTimeout(
-      input.ffmpegCommand,
-      [
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-y',
-        '-i',
-        input.imagePath,
-        '-vf',
-        filter,
-        '-frames:v',
-        '1',
-        intermediatePath
-      ],
-      input.timeoutMs
-    );
-
-    if (ffmpegResult.status !== 0) {
-      return {
-        ok: false,
-        reason: ffmpegResult.stderr || ffmpegResult.stdout || `ffmpeg exited with status ${ffmpegResult.status}`
-      };
-    }
-
+    // The Python step does the whole job: detect the generated green backdrop, key
+    // it out by relative green dominance (robust to the exact tone and brightness
+    // gradient the model emits), despill the fringe, then scale + pad to a square
+    // transparent WebP. ffmpeg's fixed 0x00ff00 colorkey could not handle the
+    // grass-green flux actually produces, which left green halos on the sticker.
     const prepareResult = await runFileWithTimeout(
       stickerPythonCommand(),
       [
         STICKER_PREPARE_SCRIPT,
-        intermediatePath,
+        input.imagePath,
         outputPath,
-        '--alpha-threshold',
-        '15',
+        '--size',
+        String(size),
         '--quality',
         String(quality),
         '--method',
@@ -605,8 +572,6 @@ export async function convertImageToStickerFile(input: {
       ],
       input.timeoutMs
     );
-
-    await fs.rm(intermediatePath, { force: true }).catch(() => undefined);
 
     if (prepareResult.status !== 0) {
       return {
