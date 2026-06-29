@@ -26,3 +26,7 @@ Thumbs.db
 
 # Deployment connection config (host/key) — keep local.
 scripts/deploy/deploy.env
+
+# Python bytecode cache
+__pycache__/
+*.pyc
