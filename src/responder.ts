@@ -248,6 +248,26 @@ function buildActionPlanPrompt(input: ActionPlanInput, guidance: ResolvedGuidanc
       : undefined
   ].filter(Boolean);
 
+  // Few-shot examples, gated on what the profile actually enables. Small CF
+  // instruct models route weather/web_search reliably only when shown the
+  // pattern; without these the 70B intermittently returns actions=[] for "vai
+  // chover?"/"quanto ta o dolar?" and the reply degrades to "nao tenho acesso".
+  const examples = [
+    guidance.profile.tools.weather
+      ? 'Mensagem "vai chover hoje aqui em sao paulo?" -> {"actions":[{"type":"get_weather","query":"Sao Paulo"}]}'
+      : undefined,
+    guidance.profile.tools.weather
+      ? 'Mensagem "como vai estar o tempo amanha?" -> {"actions":[{"type":"get_weather","query":""}]}'
+      : undefined,
+    guidance.profile.tools.webSearch
+      ? 'Mensagem "quanto ta o dolar hoje?" -> {"actions":[{"type":"web_search","query":"cotacao dolar hoje"}]}'
+      : undefined,
+    guidance.profile.tools.webSearch
+      ? 'Mensagem "quem ganhou o jogo ontem?" -> {"actions":[{"type":"web_search","query":"resultado do jogo ontem"}]}'
+      : undefined,
+    'Mensagem "oi filho, vou no mercado agora" -> {"actions":[]}'
+  ].filter(Boolean);
+
   return [
     'Voce e o planejador de acoes de um assistente de WhatsApp.',
     'Decida semanticamente quais acoes o worker deve executar para a mensagem atual. Nao use palavras-chave isoladas; interprete a conversa normal.',
@@ -265,6 +285,8 @@ function buildActionPlanPrompt(input: ActionPlanInput, guidance: ResolvedGuidanc
     '',
     'Formato exato:',
     '{"actions":[{"type":"reply_text","text":"opcional"},{"type":"get_weather","query":"cidade opcional"},{"type":"web_search","query":"o que buscar na web"},{"type":"generate_image","prompt":"prompt visual opcional","useRecentImages":false},{"type":"generate_sticker","prompt":"prompt visual opcional","useRecentImages":false},{"type":"reply_audio","text":"opcional"}]}',
+    '',
+    `Exemplos (mensagem -> plano):\n${examples.join('\n')}`,
     '',
     'Regras:',
     '- Use actions=[] para conversa normal sem ferramenta especial.',
@@ -422,11 +444,11 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
       },
       body: JSON.stringify({
         model: input.responder.model,
-        // 0.7 (vs the old 0.4) pulls the small 17B off its "safe" path — at low
-        // temperature it tends to fill short replies by echoing the user's own
-        // statement back as a tag-question ("vai visitar o Roberto, ne?"). More
-        // variance lets it actually acknowledge/add instead of mirroring.
-        temperature: 0.7,
+        // Per-model draft temperature (see config.ts). The small 17B needed 0.7
+        // to stop echoing the user back as a tag-question; larger instruct models
+        // follow the guidance at lower temps, so the default is 0.4 to keep short
+        // replies on-topic. Override via RESPONDER_DRAFT_TEMPERATURE.
+        temperature: input.responder.draftTemperature,
         messages: [
           {
             role: 'system',
@@ -435,6 +457,11 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
               'Responda somente com o texto final da mensagem.',
               'Escreva em texto puro de WhatsApp. Nao use markdown: nada de ** para negrito, # para titulo, marcadores de citacao como [1] ou caracteres especiais de formatacao. Para enfase use no maximo um asterisco simples *assim*.',
               'Nao explique o raciocinio. Nao use saudacao artificial.',
+              // The profile guidance already says this, but it rides in the USER
+              // turn where CF instruct models follow it only ~half the time. Put
+              // it in the SYSTEM turn too — that is what actually stops the 70B
+              // from answering an announcement with "que horas?"/"o que vai fazer la?".
+              'Quando a pessoa apenas avisa ou conta algo (que vai sair, aonde vai, o que vai fazer, aonde vai comer), NAO responda com pergunta de follow-up: nada de "que horas?", "o que vai fazer la?", "o que vai comer?", "com quem?" nem "quando volta?". Apenas reconheca de forma curta e natural (ex.: "ta bom", "aproveita", "manda um abraco"). So faca pergunta se a pessoa pedir algo, fizer uma pergunta, ou se for mesmo necessario para ajudar.',
               identityInstruction,
               audioReplyInstruction,
               imageOcrInstruction,

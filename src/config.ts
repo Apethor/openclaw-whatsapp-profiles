@@ -157,6 +157,11 @@ export type AppConfig = {
     apiKey?: string;
     model: string;
     timeoutMs: number;
+    // Sampling temperature for the final draft reply. Tuned per model: the small
+    // 17B needed 0.7 to stop echoing the user back as a tag-question; larger
+    // instruct models follow the guidance at lower temps, so keep this low to
+    // avoid off-topic variance. Overridable via RESPONDER_DRAFT_TEMPERATURE.
+    draftTemperature: number;
   };
   weather: {
     enabled: boolean;
@@ -435,7 +440,8 @@ export function loadConfig(): AppConfig {
             : codexProxyEnabled
               ? process.env.CODEX_PROXY_MODEL ?? 'gpt-5.4'
               : 'gpt-4o-mini'),
-      timeoutMs: Number(process.env.RESPONDER_TIMEOUT_MS ?? '120000')
+      timeoutMs: Number(process.env.RESPONDER_TIMEOUT_MS ?? '120000'),
+      draftTemperature: Number(process.env.RESPONDER_DRAFT_TEMPERATURE ?? '0.4')
     },
     weather: {
       enabled: process.env.WEATHER_ENABLED !== 'false',
