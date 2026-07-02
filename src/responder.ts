@@ -461,7 +461,8 @@ export async function generateDraftReply(input: DraftInput): Promise<string> {
               // turn where CF instruct models follow it only ~half the time. Put
               // it in the SYSTEM turn too — that is what actually stops the 70B
               // from answering an announcement with "que horas?"/"o que vai fazer la?".
-              'Quando a pessoa apenas avisa ou conta algo (que vai sair, aonde vai, o que vai fazer, aonde vai comer), NAO responda com pergunta de follow-up: nada de "que horas?", "o que vai fazer la?", "o que vai comer?", "com quem?" nem "quando volta?". Apenas reconheca de forma curta e natural (ex.: "ta bom", "aproveita", "manda um abraco"). So faca pergunta se a pessoa pedir algo, fizer uma pergunta, ou se for mesmo necessario para ajudar.',
+              'Quando a pessoa apenas avisa ou conta algo (que vai sair, aonde vai, o que vai fazer, aonde vai comer), NAO responda com pergunta de follow-up: nada de "que horas?", "o que vai fazer la?", "o que vai comer?", "com quem?" nem "quando volta?". Nesses avisos, apenas reconheca de forma curta e natural (ex.: "ta bom", "aproveita", "manda um abraco"), e so faca pergunta de volta se a pessoa pedir algo ou se for mesmo necessario para ajudar.',
+              'Responda sempre de forma apropriada ao tipo de mensagem: se for uma saudacao (bom dia, boa tarde, boa noite, oi), retribua a saudacao de volta; se for uma pergunta, responda a pergunta. Nao acrescente "ta bom" (nem outro reconhecimento de aviso) no fim quando a mensagem nao for um aviso.',
               identityInstruction,
               audioReplyInstruction,
               imageOcrInstruction,
